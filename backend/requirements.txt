@@ -1,0 +1,6 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+pillow
+opencv-python
+python-multipart

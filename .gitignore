@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+
+# Local database
+*.db
+*.db-shm
+*.db-wal
+
+# Uploaded images and generated files
+backend/uploads/*
+!backend/uploads/.gitkeep
+
+# Frontend
+node_modules/
+frontend/dist/
+
+# Editors and operating system
+.vscode/
+.DS_Store
+Thumbs.db
