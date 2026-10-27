@@ -4,17 +4,30 @@ const API_BASE_URL = (
 ).replace(/\/$/, '')
 
 async function request(path, options = {}) {
+  const headers = { ...options.headers }
+
+  if (options.body && !(options.body instanceof FormData)) {
+    headers['Content-Type'] = 'application/json'
+  }
+
   const response = await fetch(`${API_BASE_URL}${path}`, {
     ...options,
-    headers: {
-      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
-      ...options.headers,
-    },
+    headers,
   })
 
   if (!response.ok) {
-    const message = await response.text()
-    throw new Error(message || `Request failed: ${response.status}`)
+    let message = `Request failed: ${response.status}`
+
+    try {
+      const body = await response.json()
+      message = typeof body.detail === 'string'
+        ? body.detail
+        : JSON.stringify(body.detail ?? body)
+    } catch {
+      // Keep the HTTP status message if the response is not JSON.
+    }
+
+    throw new Error(message)
   }
 
   return response.json()
@@ -32,5 +45,40 @@ export function addInventoryItem(item) {
   return request('/api/inventory', {
     method: 'POST',
     body: JSON.stringify(item),
+  })
+}
+
+export async function deleteInventoryItem(itemId) {
+  const response = await fetch(
+    `${API_BASE_URL}/api/inventory/${itemId}`,
+    {
+      method: 'DELETE',
+    },
+  )
+
+  if (!response.ok) {
+    let message = 'Could not delete inventory item.'
+
+    try {
+      const data = await response.json()
+      message = data.detail || message
+    } catch {
+      // Keep the default error message.
+    }
+
+    throw new Error(message)
+  }
+
+  return response.json()
+}
+
+export function detectIngredients(files) {
+  const formData = new FormData()
+
+  files.forEach((file) => formData.append('files', file))
+
+  return request('/api/detect-ingredients', {
+    method: 'POST',
+    body: formData,
   })
 }

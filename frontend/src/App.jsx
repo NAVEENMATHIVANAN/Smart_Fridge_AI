@@ -1,6 +1,12 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { addInventoryItem, getHealth, getInventory } from './services/api'
+import {
+  addInventoryItem,
+  deleteInventoryItem,
+  detectIngredients,
+  getHealth,
+  getInventory,
+} from './services/api'
 
 const initialForm = {
   name: '',
@@ -22,6 +28,9 @@ function App() {
   const [notice, setNotice] = useState('')
   const fileInput = useRef(null)
   const photoUrls = useRef(new Set())
+  const [detected, setDetected] = useState([])
+  const [detecting, setDetecting] = useState(false)
+
   async function refreshInventory() {
     const data = await getInventory()
     setItems(data)
@@ -93,6 +102,125 @@ function App() {
     } finally {
       setSaving(false)
     }
+  }
+  
+
+async function handleDelete(item) {
+  const confirmed = window.confirm(
+    `Delete "${item.name}" from your inventory?`,
+  )
+
+  if (!confirmed) return
+
+  setError('')
+  setNotice('')
+
+  try {
+    await deleteInventoryItem(item.id)
+
+    setItems((current) =>
+      current.filter((existing) => existing.id !== item.id),
+    )
+
+    setNotice(`${item.name} was deleted from your inventory.`)
+  } catch (err) {
+    setError(`Could not delete ${item.name}. ${err.message}`)
+  }
+}
+
+async function handleDetect() {
+  setError('')
+  setNotice('')
+  setDetected([])
+
+  if (photos.length === 0) {
+    setError('Choose at least one fridge photo first.')
+    return
+  }
+
+  setDetecting(true)
+
+  try {
+    const result = await detectIngredients(
+      photos.map((photo) => photo.file),
+    )
+
+    setDetected(
+      result.ingredients.map((item, index) => ({
+        ...item,
+        reviewId: `${item.name}-${index}`,
+        quantity: String(item.quantity),
+        confirmed: true,
+      })),
+    )
+
+    setNotice(
+      `Analyzed ${result.image_count} photo(s). Review the candidates below.`,
+    )
+  } catch (err) {
+    setError(`Ingredient detection failed: ${err.message}`)
+  } finally {
+    setDetecting(false)
+  }
+}
+
+function updateDetected(reviewId, field, value) {
+  setDetected((current) =>
+    current.map((item) =>
+      item.reviewId === reviewId
+        ? { ...item, [field]: value }
+        : item,
+    ),
+  )
+}
+
+async function saveDetected() {
+  const selected = detected.filter((item) => item.confirmed)
+
+  if (selected.length === 0) {
+    setError('Select at least one ingredient to save.')
+    return
+  }
+
+  setSaving(true)
+  setError('')
+  setNotice('')
+
+  try {
+    const saved = []
+
+    for (const item of selected) {
+      const quantity = Number(item.quantity)
+
+      if (!item.name.trim() || !Number.isFinite(quantity) || quantity <= 0) {
+        throw new Error('Each selected item needs a name and positive quantity.')
+      }
+
+      const created = await addInventoryItem({
+        name: item.name.trim(),
+        quantity,
+        unit: item.unit,
+        category: item.category,
+      })
+
+      saved.push(created)
+    }
+
+    setItems((current) => [...current, ...saved])
+    setDetected([])
+    setNotice(`Saved ${saved.length} confirmed ingredient(s) to inventory.`)
+  } catch (err) {
+    // Reload because earlier items may already have been saved.
+    try {
+      await refreshInventory()
+    } catch {
+      // Preserve the original error.
+    }
+
+    setError(`Could not finish saving all ingredients: ${err.message}`)
+  } finally {
+    setSaving(false)
+  }
   }
 
   
@@ -200,6 +328,16 @@ function removePhoto(id) {
               <p className="mt-4 text-sm text-[#d3e4d8]">A little more organized, a little less waste.</p>
             </div>
           </div>
+          
+          <button
+           type="button"
+           onClick={handleDetect}
+           disabled={detecting || photos.length === 0 || health !== 'connected'}
+           className="mt-4 w-full rounded-xl bg-[#245c43] px-4 py-3 text-sm font-semibold text-white hover:bg-[#173e30] disabled:cursor-not-allowed"
+           >
+          {detecting ? 'Analyzing photos…' : 'Detect ingredients with AI'}
+           </button>
+
         </section>
 
         {error && (
@@ -213,6 +351,134 @@ function removePhoto(id) {
             {notice}
           </div>
         )}
+
+        
+{detected.length > 0 && (
+  <section className="mb-9 rounded-2xl border border-[#dce5da] bg-white p-5 md:p-7">
+    <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+      <div>
+        <h2 className="text-xl font-semibold">
+          Review detected ingredients
+        </h2>
+        <p className="mt-1 text-sm text-[#78877c]">
+          Check the names and quantities before saving them to your inventory.
+        </p>
+      </div>
+      <span className="rounded-full bg-[#e3f3e6] px-3 py-1.5 text-sm font-medium text-[#245c43]">
+        {detected.filter((item) => item.confirmed).length} selected
+      </span>
+    </div>
+
+    <div className="space-y-4">
+      {detected.map((item) => (
+        <div
+          key={item.reviewId}
+          className="rounded-xl border border-[#e4eae2] bg-[#f8faf6] p-4"
+        >
+          <div className="flex items-start gap-3">
+            <input
+              type="checkbox"
+              checked={item.confirmed}
+              onChange={(event) =>
+                updateDetected(item.reviewId, "confirmed", event.target.checked)
+              }
+              aria-label={`Select ${item.name} to save`}
+              className="mt-2 h-4 w-4 accent-emerald-700"
+            />
+
+            <div className="grid flex-1 gap-3 sm:grid-cols-2">
+              <label className="text-sm">
+                Ingredient name
+                <input
+                  value={item.name}
+                  onChange={(event) =>
+                    updateDetected(item.reviewId, "name", event.target.value)
+                  }
+                  maxLength={120}
+                  className="mt-1.5 w-full rounded-lg border border-[#dce5da] bg-white px-3 py-2.5"
+                />
+              </label>
+
+              <label className="text-sm">
+                Category
+                <select
+                  value={item.category}
+                  onChange={(event) =>
+                    updateDetected(item.reviewId, "category", event.target.value)
+                  }
+                  className="mt-1.5 w-full rounded-lg border border-[#dce5da] bg-white px-3 py-2.5"
+                >
+                  {categories.map((category) => (
+                    <option key={category} value={category}>
+                      {category}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="text-sm">
+                Quantity
+                <input
+                  type="number"
+                  min="0.01"
+                  step="any"
+                  value={item.quantity}
+                  onChange={(event) =>
+                    updateDetected(item.reviewId, "quantity", event.target.value)
+                  }
+                  className="mt-1.5 w-full rounded-lg border border-[#dce5da] bg-white px-3 py-2.5"
+                />
+              </label>
+
+              <label className="text-sm">
+                Unit
+                <input
+                  value={item.unit}
+                  onChange={(event) =>
+                    updateDetected(item.reviewId, "unit", event.target.value)
+                  }
+                  maxLength={30}
+                  className="mt-1.5 w-full rounded-lg border border-[#dce5da] bg-white px-3 py-2.5"
+                />
+              </label>
+            </div>
+
+            <button
+              type="button"
+              onClick={() =>
+                setDetected((current) =>
+                  current.filter((entry) => entry.reviewId !== item.reviewId)
+                )
+              }
+              aria-label={`Remove ${item.name}`}
+              className="rounded-lg px-2 py-1 text-lg text-red-600 hover:bg-red-50"
+            >
+              ×
+            </button>
+          </div>
+
+          {typeof item.confidence === "number" && (
+            <p className="mt-3 pl-7 text-xs text-[#78877c]">
+              AI confidence: {Math.round(item.confidence * 100)}%
+            </p>
+          )}
+        </div>
+      ))}
+    </div>
+
+    <button
+      type="button"
+      onClick={saveDetected}
+      disabled={saving || !detected.some((item) => item.confirmed)}
+      className="mt-5 w-full rounded-xl bg-[#245c43] px-4 py-3 font-semibold text-white hover:bg-[#173e30] disabled:cursor-not-allowed disabled:opacity-50"
+    >
+      {saving
+        ? "Saving ingredients…"
+        : `Save ${detected.filter((item) => item.confirmed).length} selected ingredient(s)`}
+    </button>
+  </section>
+)}
+
 
         <section className="mb-9 grid grid-cols-1 gap-4 sm:grid-cols-3">
           {[
@@ -316,7 +582,21 @@ function removePhoto(id) {
                         <p className="mt-0.5 text-xs text-[#78877c]">{item.category || 'Uncategorized'}</p>
                       </div>
                     </div>
-                    <span className="shrink-0 text-sm font-medium">{item.quantity} {item.unit}</span>
+                    <div className="flex shrink-0 items-center gap-3">
+                   <span className="text-sm font-medium">
+                    {item.quantity} {item.unit}
+                   </span>
+
+                  <button
+                   type="button"
+                   onClick={() => handleDelete(item)}
+                   aria-label={`Delete ${item.name}`}
+                   title="Delete item"
+                   className="rounded-lg border border-red-200 px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-50"
+                   >
+                   Delete
+                  </button>
+                </div>
                   </li>
                 ))}
               </ul>
@@ -370,9 +650,20 @@ function removePhoto(id) {
             )}
 
             <div className="mt-4 rounded-xl bg-[#f6f8f5] p-4">
-              <p className="text-sm font-semibold">Coming next: AI ingredient detection</p>
+              
+            <button
+             type="button"
+             onClick={handleDetect}
+             disabled={detecting || photos.length === 0 || health !== 'connected'}
+             className="mt-4 w-full rounded-xl bg-[#245c43] px-4 py-3 text-sm font-semibold text-white hover:bg-[#173e30] disabled:cursor-not-allowed"
+             >
+             {detecting ? 'Analyzing photos…' : 'Detect ingredients with AI'}
+            </button>
+
+              <p className="text-sm font-semibold">AI ingredient detection</p>
               <p className="mt-1 text-xs leading-5 text-[#78877c]">
-                Your selected images currently stay in the browser. They are not uploaded or analyzed yet.
+                Your photos will be analyzed securely through the configured vision API.
+                Review detected ingredients before saving them.
               </p>
             </div>
           </section>

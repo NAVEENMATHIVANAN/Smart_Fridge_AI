@@ -4,3 +4,4 @@ sqlalchemy
 pillow
 opencv-python
 python-multipart
+requests

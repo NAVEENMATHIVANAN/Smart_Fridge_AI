@@ -4,6 +4,9 @@ __pycache__/
 .venv/
 venv/
 .env
+.env
+.env.*
+!.env.example
 
 # Local database
 *.db
@@ -13,7 +16,7 @@ venv/
 # Uploaded images and generated files
 backend/uploads/*
 !backend/uploads/.gitkeep
-
+backend/.env
 # Frontend
 node_modules/
 frontend/dist/
