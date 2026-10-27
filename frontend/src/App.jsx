@@ -6,13 +6,20 @@ import {
   detectIngredients,
   getHealth,
   getInventory,
+  updateInventoryItem,
+  suggestExpiryDate,
 } from './services/api'
+
+import { getFreshness } from './utils/freshness'
 
 const initialForm = {
   name: '',
   quantity: '1',
   unit: 'pieces',
   category: 'Vegetable',
+  purchase_date: '',
+  expiry_date: '',
+  storage_notes: '',
 }
 
 const categories = ['Vegetable', 'Fruit', 'Dairy', 'Protein', 'Other']
@@ -30,6 +37,9 @@ function App() {
   const photoUrls = useRef(new Set())
   const [detected, setDetected] = useState([])
   const [detecting, setDetecting] = useState(false)
+  const [suggestingExpiry, setSuggestingExpiry] = useState(false)
+  const [suggestionExplanation, setSuggestionExplanation] = useState('')
+  const [editingDates, setEditingDates] = useState({})
 
   async function refreshInventory() {
     const data = await getInventory()
@@ -93,6 +103,9 @@ function App() {
         quantity,
         unit: form.unit,
         category: form.category,
+        purchase_date: form.purchase_date || null,
+        expiry_date: form.expiry_date || null,
+        storage_notes: form.storage_notes.trim() || null,
       })
       setItems((current) => [...current, created])
       setForm(initialForm)
@@ -103,7 +116,82 @@ function App() {
       setSaving(false)
     }
   }
-  
+
+
+  async function handleSuggestExpiry() {
+    if (!form.name.trim()) {
+      setError('Enter an ingredient name before requesting an expiry suggestion.')
+      return
+    }
+
+    setError('')
+    setNotice('')
+    setSuggestionExplanation('')
+    setSuggestingExpiry(true)
+
+    try {
+      const result = await suggestExpiryDate({
+        name: form.name.trim(),
+        category: form.category,
+        purchase_date: form.purchase_date || null,
+        storage_notes: form.storage_notes.trim() || null,
+      })
+
+      setForm((current) => ({
+        ...current,
+        expiry_date: result.suggested_expiry_date,
+      }))
+      setSuggestionExplanation(
+        `${result.explanation} ${result.disclaimer}`,
+      )
+    } catch (err) {
+      setError(`Could not suggest an expiry date. ${err.message}`)
+    } finally {
+      setSuggestingExpiry(false)
+    }
+  }
+
+  function changeItemDate(itemId, field, value) {
+    setEditingDates((current) => ({
+      ...current,
+      [itemId]: {
+        ...(current[itemId] || {}),
+        [field]: value,
+      },
+    }))
+  }
+
+  async function saveItemDates(item) {
+    const changes = editingDates[item.id] || {}
+    setError('')
+    setNotice('')
+
+    try {
+      const updated = await updateInventoryItem(item.id, {
+        purchase_date: changes.purchase_date !== undefined
+          ? changes.purchase_date || null
+          : item.purchase_date || null,
+        expiry_date: changes.expiry_date !== undefined
+          ? changes.expiry_date || null
+          : item.expiry_date || null,
+        storage_notes: changes.storage_notes !== undefined
+          ? changes.storage_notes || null
+          : item.storage_notes || null,
+      })
+
+      setItems((current) =>
+        current.map((existing) => existing.id === item.id ? updated : existing),
+      )
+      setEditingDates((current) => {
+        const next = { ...current }
+        delete next[item.id]
+        return next
+      })
+      setNotice(`Freshness details updated for ${item.name}.`)
+    } catch (err) {
+      setError(`Could not update ${item.name}. ${err.message}`)
+    }
+  }
 
 async function handleDelete(item) {
   const confirmed = window.confirm(
@@ -150,6 +238,9 @@ async function handleDetect() {
         ...item,
         reviewId: `${item.name}-${index}`,
         quantity: String(item.quantity),
+        purchase_date: '',
+        expiry_date: '',
+        storage_notes: '',
         confirmed: true,
       })),
     )
@@ -201,6 +292,9 @@ async function saveDetected() {
         quantity,
         unit: item.unit,
         category: item.category,
+        purchase_date: item.purchase_date || null,
+        expiry_date: item.expiry_date || null,
+        storage_notes: item.storage_notes?.trim() || null,
       })
 
       saved.push(created)
@@ -329,14 +423,6 @@ function removePhoto(id) {
             </div>
           </div>
           
-          <button
-           type="button"
-           onClick={handleDetect}
-           disabled={detecting || photos.length === 0 || health !== 'connected'}
-           className="mt-4 w-full rounded-xl bg-[#245c43] px-4 py-3 text-sm font-semibold text-white hover:bg-[#173e30] disabled:cursor-not-allowed"
-           >
-          {detecting ? 'Analyzing photos…' : 'Detect ingredients with AI'}
-           </button>
 
         </section>
 
@@ -438,6 +524,37 @@ function removePhoto(id) {
                     updateDetected(item.reviewId, "unit", event.target.value)
                   }
                   maxLength={30}
+                  className="mt-1.5 w-full rounded-lg border border-[#dce5da] bg-white px-3 py-2.5"
+                />
+              </label>
+
+              <label className="text-sm">
+                Purchase date
+                <input
+                  type="date"
+                  value={item.purchase_date || ''}
+                  onChange={(event) => updateDetected(item.reviewId, 'purchase_date', event.target.value)}
+                  className="mt-1.5 w-full rounded-lg border border-[#dce5da] bg-white px-3 py-2.5"
+                />
+              </label>
+
+              <label className="text-sm">
+                Expiry date
+                <input
+                  type="date"
+                  value={item.expiry_date || ''}
+                  onChange={(event) => updateDetected(item.reviewId, 'expiry_date', event.target.value)}
+                  className="mt-1.5 w-full rounded-lg border border-[#dce5da] bg-white px-3 py-2.5"
+                />
+              </label>
+
+              <label className="text-sm sm:col-span-2">
+                Storage notes
+                <input
+                  value={item.storage_notes || ''}
+                  onChange={(event) => updateDetected(item.reviewId, 'storage_notes', event.target.value)}
+                  maxLength={500}
+                  placeholder="e.g. Keep refrigerated"
                   className="mt-1.5 w-full rounded-lg border border-[#dce5da] bg-white px-3 py-2.5"
                 />
               </label>
@@ -555,7 +672,49 @@ function removePhoto(id) {
                     {['pieces', 'items', 'g', 'kg', 'ml', 'litres', 'packets', 'bunches'].map((unit) => <option key={unit}>{unit}</option>)}
                   </select>
                 </label>
+                <label className="text-sm">
+                  Purchase date
+                  <input
+                    type="date"
+                    value={form.purchase_date}
+                    onChange={(e) => setForm({ ...form, purchase_date: e.target.value })}
+                    className="mt-1.5 w-full rounded-lg border border-[#dce5da] bg-white px-3 py-2.5 outline-none focus:border-emerald-600"
+                  />
+                </label>
+                <label className="text-sm">
+                  Expiry date
+                  <input
+                    type="date"
+                    value={form.expiry_date}
+                    onChange={(e) => setForm({ ...form, expiry_date: e.target.value })}
+                    className="mt-1.5 w-full rounded-lg border border-[#dce5da] bg-white px-3 py-2.5 outline-none focus:border-emerald-600"
+                  />
+                </label>
+                <label className="text-sm sm:col-span-2">
+                  Storage notes
+                  <textarea
+                    value={form.storage_notes}
+                    onChange={(e) => setForm({ ...form, storage_notes: e.target.value })}
+                    maxLength={500}
+                    rows={2}
+                    placeholder="e.g. Keep refrigerated; opened today"
+                    className="mt-1.5 w-full rounded-lg border border-[#dce5da] bg-white px-3 py-2.5 outline-none focus:border-emerald-600"
+                  />
+                </label>
               </div>
+              <button
+                type="button"
+                onClick={handleSuggestExpiry}
+                disabled={suggestingExpiry || saving || health !== 'connected'}
+                className="mt-3 w-full rounded-lg border border-[#b8cfb5] bg-white px-4 py-2.5 text-sm font-semibold text-[#245c43] hover:bg-[#eef5eb] disabled:cursor-not-allowed"
+              >
+                {suggestingExpiry ? 'Suggesting expiry date…' : '✨ Suggest expiry date with AI'}
+              </button>
+              {suggestionExplanation && (
+                <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-900">
+                  {suggestionExplanation} Review the date before saving.
+                </p>
+              )}
               <button disabled={saving || health !== 'connected'} className="mt-4 w-full rounded-lg bg-[#245c43] px-4 py-3 text-sm font-semibold text-white hover:bg-[#173e30] disabled:cursor-not-allowed">
                 {saving ? 'Saving…' : '+ Add to inventory'}
               </button>
@@ -572,31 +731,92 @@ function removePhoto(id) {
             ) : (
               <ul className="divide-y divide-[#edf0eb]">
                 {items.map((item) => (
-                  <li key={item.id} className="flex items-center justify-between gap-3 py-4">
-                    <div className="flex min-w-0 items-center gap-3">
-                      <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-[#eef5eb] text-xl">
-                        {item.category === 'Fruit' ? '🍎' : item.category === 'Dairy' ? '🥛' : item.category === 'Protein' ? '🥚' : item.category === 'Vegetable' ? '🥦' : '🧺'}
-                      </span>
-                      <div className="min-w-0">
-                        <p className="truncate font-medium">{item.name}</p>
-                        <p className="mt-0.5 text-xs text-[#78877c]">{item.category || 'Uncategorized'}</p>
+                  <li key={item.id} className="flex flex-col gap-3 py-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex min-w-0 items-center gap-3">
+                        <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-[#eef5eb] text-xl">
+                          {item.category === 'Fruit' ? '🍎' : item.category === 'Dairy' ? '🥛' : item.category === 'Protein' ? '🥚' : item.category === 'Vegetable' ? '🥦' : '🧺'}
+                        </span>
+                        <div className="min-w-0">
+                          <p className="truncate font-medium">{item.name}</p>
+                          <p className="mt-0.5 text-xs text-[#78877c]">{item.category || 'Uncategorized'}</p>
+                        </div>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-3">
+                        <span className="text-sm font-medium">{item.quantity} {item.unit}</span>
+                        <button
+                          type="button"
+                          onClick={() => handleDelete(item)}
+                          aria-label={`Delete ${item.name}`}
+                          title="Delete item"
+                          className="rounded-lg border border-red-200 px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-50"
+                        >
+                          Delete
+                        </button>
                       </div>
                     </div>
-                    <div className="flex shrink-0 items-center gap-3">
-                   <span className="text-sm font-medium">
-                    {item.quantity} {item.unit}
-                   </span>
 
-                  <button
-                   type="button"
-                   onClick={() => handleDelete(item)}
-                   aria-label={`Delete ${item.name}`}
-                   title="Delete item"
-                   className="rounded-lg border border-red-200 px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-50"
-                   >
-                   Delete
-                  </button>
-                </div>
+                    {(() => {
+                      const freshness = getFreshness(item.expiry_date)
+                      const badgeClass = freshness.status === 'expired'
+                        ? 'bg-red-100 text-red-800'
+                        : freshness.status === 'soon'
+                          ? 'bg-amber-100 text-amber-900'
+                          : freshness.status === 'fresh'
+                            ? 'bg-emerald-100 text-emerald-800'
+                            : 'bg-gray-100 text-gray-700'
+                      const changes = editingDates[item.id] || {}
+                      return (
+                        <div className="ml-0 rounded-xl bg-[#f8faf6] p-3">
+                          <div className="mb-3 flex flex-wrap items-center gap-2">
+                            <span className={`rounded-full px-3 py-1 text-xs font-semibold ${badgeClass}`}>
+                              {freshness.label}
+                            </span>
+                            <span className="text-xs text-[#78877c]">
+                              {item.expiry_date ? `Expiry: ${item.expiry_date}` : 'Add an expiry date to track freshness.'}
+                            </span>
+                          </div>
+                          <div className="grid gap-3 sm:grid-cols-3">
+                            <label className="text-xs text-[#536459]">
+                              Purchase date
+                              <input
+                                type="date"
+                                value={changes.purchase_date !== undefined ? changes.purchase_date : (item.purchase_date || '')}
+                                onChange={(e) => changeItemDate(item.id, 'purchase_date', e.target.value)}
+                                className="mt-1 w-full rounded-lg border border-[#dce5da] bg-white px-2 py-2 text-sm"
+                              />
+                            </label>
+                            <label className="text-xs text-[#536459]">
+                              Expiry date
+                              <input
+                                type="date"
+                                value={changes.expiry_date !== undefined ? changes.expiry_date : (item.expiry_date || '')}
+                                onChange={(e) => changeItemDate(item.id, 'expiry_date', e.target.value)}
+                                className="mt-1 w-full rounded-lg border border-[#dce5da] bg-white px-2 py-2 text-sm"
+                              />
+                            </label>
+                            <label className="text-xs text-[#536459]">
+                              Storage notes
+                              <input
+                                value={changes.storage_notes !== undefined ? changes.storage_notes : (item.storage_notes || '')}
+                                onChange={(e) => changeItemDate(item.id, 'storage_notes', e.target.value)}
+                                maxLength={500}
+                                placeholder="Storage details"
+                                className="mt-1 w-full rounded-lg border border-[#dce5da] bg-white px-2 py-2 text-sm"
+                              />
+                            </label>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => saveItemDates(item)}
+                            disabled={Object.keys(changes).length === 0}
+                            className="mt-3 rounded-lg border border-[#b8cfb5] px-3 py-2 text-xs font-semibold text-[#245c43] hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            Save freshness details
+                          </button>
+                        </div>
+                      )
+                    })()}
                   </li>
                 ))}
               </ul>
@@ -607,7 +827,7 @@ function removePhoto(id) {
             <div className="mb-5">
               <h2 className="text-xl font-semibold">Scan your fridge</h2>
               <p className="mt-1 text-sm leading-6 text-[#78877c]">
-                Select up to three photos of your fridge. AI detection will be connected in the next stage.
+                Select up to three photos of your fridge and review AI-detected ingredients before saving.
               </p>
             </div>
 

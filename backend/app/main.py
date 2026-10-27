@@ -8,11 +8,15 @@ from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 from app.database import Base, engine, get_db
 from app.models import InventoryItem
-from app.schemas import InventoryCreate, InventoryResponse
+from app.schemas import InventoryCreate, InventoryResponse, InventoryUpdate
 
 from fastapi import File, UploadFile
 from app.services.image_validator import read_validated_image
 from app.services.vision_service import detect_ingredients
+
+from app.schemas import ExpirySuggestionRequest, ExpirySuggestionResponse
+from app.services.expiry_service import suggest_expiry
+from starlette.concurrency import run_in_threadpool
 
 from typing import Annotated
 from fastapi import File, UploadFile
@@ -73,6 +77,9 @@ def create_inventory_item(
         quantity=item.quantity,
         unit=unit,
         category=item.category.strip() if item.category else None,
+        purchase_date=item.purchase_date,
+        expiry_date=item.expiry_date,
+        storage_notes=item.storage_notes,
     )
 
     db.add(db_item)
@@ -132,6 +139,52 @@ def delete_inventory_item(
         },
     },
 )
+
+
+@app.post(
+    "/api/expiry-suggestion",
+    response_model=ExpirySuggestionResponse,
+)
+async def expiry_suggestion(payload: ExpirySuggestionRequest):
+    try:
+        return await run_in_threadpool(
+            suggest_expiry,
+            payload.name,
+            payload.category,
+            payload.purchase_date,
+            payload.storage_notes,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.patch("/api/inventory/{item_id}", response_model=InventoryResponse)
+def update_inventory_item(
+    item_id: int,
+    payload: InventoryUpdate,
+    db: Session = Depends(get_db),
+):
+    item = db.get(InventoryItem, item_id)
+
+    if item is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Inventory item not found.",
+        )
+
+    updates = payload.model_dump(exclude_unset=True)
+
+    for field, value in updates.items():
+        setattr(item, field, value)
+
+    db.commit()
+    db.refresh(item)
+
+    return item
+
+
 async def detect_fridge_ingredients(
     files: Annotated[
         list[UploadFile],

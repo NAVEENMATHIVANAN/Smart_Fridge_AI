@@ -82,3 +82,56 @@ export function detectIngredients(files) {
     body: formData,
   })
 }
+
+
+export async function updateInventoryItem(itemId, updates) {
+  const response = await fetch(
+    `${API_BASE_URL}/api/inventory/${itemId}`,
+    {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(updates),
+    }
+  )
+
+  const data = await response.json().catch(() => ({}))
+
+  if (!response.ok) {
+    throw new Error(data.detail || 'Could not update inventory item.')
+  }
+
+  return data
+}
+
+export async function suggestExpiryDate({
+  name,
+  category = null,
+  purchase_date = null,
+  storage_notes = null,
+}) {
+  const response = await fetch(
+    `${API_BASE_URL}/api/expiry-suggestion`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        name,
+        category,
+        purchase_date: purchase_date || null,
+        storage_notes: storage_notes || null,
+      }),
+    }
+  )
+
+  const data = await response.json().catch(() => ({}))
+
+  if (!response.ok) {
+    throw new Error(data.detail || 'Could not suggest an expiry date.')
+  }
+
+  return data
+}
