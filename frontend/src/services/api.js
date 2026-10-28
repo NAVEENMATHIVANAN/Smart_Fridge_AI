@@ -73,43 +73,83 @@ export async function deleteInventoryItem(itemId) {
 }
 
 
+
 export async function detectIngredients(files) {
+  if (!Array.isArray(files) || files.length < 1 || files.length > 3) {
+    throw new Error('Select between 1 and 3 photos before scanning.')
+  }
+
   const formData = new FormData()
 
   files.forEach((file) => {
     formData.append('files', file)
   })
 
-  let response
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), 90000)
 
   try {
-    response = await fetch(
-      `${API_BASE_URL}/api/detect-ingredients`,
-      {
-        method: 'POST',
-        body: formData,
+    let response
+
+    try {
+      response = await fetch(
+        `${API_BASE_URL}/api/detect-ingredients`,
+        {
+          method: 'POST',
+          body: formData,
+          signal: controller.signal,
+        }
+      )
+    } catch (error) {
+      if (error.name === 'AbortError') {
+        throw new Error(
+          'Detection timed out after 90 seconds. Your photos are still selected. Retry, or use fewer or smaller photos.'
+        )
       }
-    )
-  } catch (error) {
-    console.error('Detection network error:', error)
 
-    throw new Error(
-      'Cannot reach the backend. Check that FastAPI is running at ' +
-      API_BASE_URL + ' and that CORS allows the frontend origin.'
-    )
+      throw new Error(
+        'Cannot connect to the backend. Check that FastAPI is running at ' +
+        `${API_BASE_URL}. Your selected photos are still available.`
+      )
+    }
+
+    const data = await response.json().catch(() => ({}))
+
+    if (!response.ok) {
+      const detail =
+        typeof data.detail === 'string'
+          ? data.detail
+          : data.detail
+            ? JSON.stringify(data.detail)
+            : ''
+
+      if (response.status === 502 || response.status === 503) {
+        throw new Error(
+          `The AI service is temporarily unavailable. ${detail} Retry in a moment.`
+        )
+      }
+
+      if (response.status === 413) {
+        throw new Error(
+          'The photos are too large for the server. Choose smaller images.'
+        )
+      }
+
+      if (response.status === 422) {
+        throw new Error(
+          `The photos could not be accepted. Check that you selected 1–3 valid images. ${detail}`
+        )
+      }
+
+      throw new Error(
+        `Detection failed (HTTP ${response.status}). ${detail}`
+      )
+    }
+
+    return data
+  } finally {
+    clearTimeout(timeoutId)
   }
-
-  const data = await response.json().catch(() => ({}))
-
-  if (!response.ok) {
-    console.error('Detection API error:', response.status, data)
-
-    throw new Error(
-      data.detail || `Ingredient detection failed (HTTP ${response.status}).`
-    )
-  }
-
-  return data
 }
 
 

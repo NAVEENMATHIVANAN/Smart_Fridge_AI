@@ -321,7 +321,8 @@ async function handleDetect() {
       `Analyzed ${result.image_count} photo(s). Review the candidates below.`
     )
   } catch (err) {
-    setError(`Ingredient detection failed: ${err.message}`)
+  setError(`Ingredient detection failed: ${err.message}`)
+  setNotice('Your selected photos have been kept. You can retry detection.')
   } finally {
     setDetecting(false)
   }
@@ -1258,6 +1259,19 @@ function capturePhoto() {
              >
              {detecting ? 'Analyzing photos…' : 'Detect ingredients with AI'}
             </button>
+            
+            
+             {error && photos.length > 0 && (
+            <button
+             type="button"
+             onClick={handleDetect}
+             disabled={detecting}
+             className="mt-2 rounded-lg border border-[#245c43] px-4 py-2.5 text-sm font-semibold text-[#245c43] disabled:cursor-not-allowed disabled:opacity-50"
+           >
+            {detecting ? 'Retrying detection…' : 'Retry detection'}
+           </button>
+             )}
+
 
               <p className="text-sm font-semibold">AI ingredient detection</p>
               <p className="mt-1 text-xs leading-5 text-[#78877c]">
