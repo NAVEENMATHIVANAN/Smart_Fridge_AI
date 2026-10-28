@@ -55,3 +55,29 @@ class ExpirySuggestionResponse(BaseModel):
     suggested_expiry_date: date
     explanation: str
     disclaimer: str
+
+
+class RecipeSuggestionRequest(BaseModel):
+    cuisine: str | None = Field(default=None, max_length=60)
+    dietary_preferences: list[str] = Field(default_factory=list, max_length=10)
+    excluded_ingredients: list[str] = Field(default_factory=list, max_length=30)
+    servings: int = Field(default=2, ge=1, le=12)
+    max_prep_minutes: int = Field(default=45, ge=5, le=240)
+
+
+class RecipeResponse(BaseModel):
+    title: str
+    description: str
+    prep_minutes: int = Field(ge=1, le=1440)
+    servings: int = Field(ge=1, le=12)
+    available_ingredients: list[str]
+    missing_ingredients: list[str]
+    uses_expiring_soon: list[str]
+    steps: list[str]
+    disclaimer: str
+
+
+class RecipeSuggestionResponse(BaseModel):
+    recipes: list[RecipeResponse]
+    inventory_count: int
+    message: str

@@ -188,6 +188,35 @@ export async function updateInventoryItem(itemId, updates) {
 }
 
 
+export async function suggestRecipes(preferences = {}) {
+  const response = await fetch(
+    `${API_BASE_URL}/api/recipes/suggest`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        cuisine: preferences.cuisine || null,
+        dietary_preferences: preferences.dietaryPreferences || [],
+        excluded_ingredients: preferences.excludedIngredients || [],
+        servings: Number(preferences.servings) || 2,
+        max_prep_minutes: Number(preferences.maxPrepMinutes) || 45,
+      }),
+    }
+  )
+
+  const data = await response.json().catch(() => ({}))
+
+  if (!response.ok) {
+    throw new Error(
+      data.detail || `Recipe request failed (${response.status}).`
+    )
+  }
+
+  return data
+}
+
 
 export async function suggestExpiryDate({
   name,

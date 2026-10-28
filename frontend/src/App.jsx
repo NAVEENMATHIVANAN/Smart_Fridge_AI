@@ -12,6 +12,7 @@ import {
 
 import { getFreshness } from './utils/freshness'
 import { assessImageQuality } from './utils/imageQuality'
+import RecipeSuggestions from './components/RecipeSuggestions'
 
 const initialForm = {
   name: '',
@@ -23,7 +24,7 @@ const initialForm = {
   storage_notes: '',
 }
 
-const categories = ['Vegetable', 'Fruit', 'Dairy', 'Protein', 'Other']
+const categories = ['Fruit', 'Vegetable', 'Dairy', 'Protein', 'Juices', 'Other']
 
 function getStockStatus(quantity) {
   const value = Number(quantity)
@@ -58,6 +59,8 @@ function App() {
   const [suggestionExplanation, setSuggestionExplanation] = useState('')
   const [editingItems, setEditingItems] = useState({})
   const [stockFilter, setStockFilter] = useState('all')
+  const [expandedCategories, setExpandedCategories] = useState({})
+  const [activeView, setActiveView] = useState('inventory')
 
   async function refreshInventory() {
     const data = await getInventory()
@@ -105,13 +108,11 @@ function App() {
     return true
   })
 
-  const categoryOrder = ['Fruit', 'Vegetable', 'Dairy', 'Protein', 'Other', 'Uncategorized']
-  const groupedItems = categoryOrder
-    .map((category) => ({
-      category,
-      items: filteredItems.filter((item) => (item.category || 'Uncategorized') === category),
-    }))
-    .filter((group) => group.items.length > 0)
+  const categoryOrder = ['Fruit', 'Vegetable', 'Dairy', 'Protein', 'Juices', 'Other', 'Uncategorized']
+  const groupedItems = categoryOrder.map((category) => ({
+    category,
+    items: filteredItems.filter((item) => (item.category || 'Uncategorized') === category),
+  }))
 
   async function handleAdd(event) {
     event.preventDefault()
@@ -659,11 +660,10 @@ function capturePhoto() {
               Know what’s fresh. Waste less.
             </h1>
             <p className="mt-4 max-w-lg text-sm leading-6 text-[#d3e4d8] md:text-base">
-              Keep your ingredients organized today. AI-powered fridge scanning
-              and personalized recipe ideas are coming next.
+              Organize your ingredients, scan your fridge, and discover recipes inspired by your saved inventory and cuisines around the world.
             </p>
             <button
-              onClick={() => document.getElementById('photo-upload')?.scrollIntoView({ behavior: 'smooth' })}
+              onClick={() => { setActiveView('inventory'); setTimeout(() => document.getElementById('photo-upload')?.scrollIntoView({ behavior: 'smooth' }), 0) }}
               className="mt-6 rounded-xl bg-[#d3edb9] px-5 py-3 text-sm font-semibold text-[#173e30] hover:bg-white"
             >
               Scan my fridge <span aria-hidden="true">↗</span>
@@ -678,6 +678,18 @@ function capturePhoto() {
           
 
         </section>
+
+        <nav aria-label="Dashboard views" className="mb-7 flex flex-wrap gap-2 rounded-2xl border border-[#e4eae2] bg-white p-2">
+          <button type="button" onClick={() => setActiveView('inventory')} className={`rounded-xl px-4 py-2.5 text-sm font-semibold transition ${activeView === 'inventory' ? 'bg-[#245c43] text-white' : 'text-[#536459] hover:bg-[#f1f6ef]'}`}>
+            🧺 Inventory
+          </button>
+          <button type="button" onClick={() => setActiveView('recipes')} className={`rounded-xl px-4 py-2.5 text-sm font-semibold transition ${activeView === 'recipes' ? 'bg-[#245c43] text-white' : 'text-[#536459] hover:bg-[#f1f6ef]'}`}>
+            🍲 Recipe ideas
+          </button>
+          <button type="button" onClick={() => { setActiveView('inventory'); setTimeout(() => document.getElementById('photo-upload')?.scrollIntoView({ behavior: 'smooth' }), 0) }} className="rounded-xl px-4 py-2.5 text-sm font-semibold text-[#536459] transition hover:bg-[#f1f6ef]">
+            📷 Scan fridge
+          </button>
+        </nav>
 
         {error && (
           <div role="alert" className="mb-5 flex items-start justify-between gap-3 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">
@@ -850,6 +862,8 @@ function capturePhoto() {
 )}
 
 
+        {activeView === 'inventory' && (
+        <>
         <section className="mb-9 grid grid-cols-1 gap-4 sm:grid-cols-3">
           {[
             { label: 'Inventory items', value: loading ? '…' : items.length, icon: '🧺' },
@@ -1000,18 +1014,25 @@ function capturePhoto() {
               <div className="space-y-6">
                 {groupedItems.map((group) => (
                   <section key={group.category} aria-label={`${group.category} inventory`}>
-                    <h3 className="mb-2 flex items-center gap-2 border-b border-[#e4eae2] pb-2 text-sm font-bold text-[#245c43]">
-                      <span>{group.category === 'Fruit' ? '🍎' : group.category === 'Vegetable' ? '🥦' : group.category === 'Dairy' ? '🥛' : group.category === 'Protein' ? '🥚' : group.category === 'Other' ? '🧺' : '📦'}</span>
-                      {group.category}
-                      <span className="rounded-full bg-[#eef5eb] px-2 py-0.5 text-xs font-medium">{group.items.length}</span>
-                    </h3>
+                    <button
+                      type="button"
+                      aria-expanded={Boolean(expandedCategories[group.category])}
+                      onClick={() => setExpandedCategories((current) => ({ ...current, [group.category]: !current[group.category] }))}
+                      className="mb-2 flex w-full items-center gap-2 border-b border-[#e4eae2] pb-3 text-left text-sm font-bold text-[#245c43]"
+                    >
+                      <span>{group.category === 'Fruit' ? '🍎' : group.category === 'Vegetable' ? '🥦' : group.category === 'Dairy' ? '🥛' : group.category === 'Protein' ? '🥚' : group.category === 'Juices' ? '🧃' : group.category === 'Other' ? '🧺' : '📦'}</span>
+                      <span className="flex-1">{group.category}</span>
+                      <span className="rounded-full bg-[#eef5eb] px-2.5 py-1 text-xs font-medium">{group.items.length}</span>
+                      <span aria-hidden="true" className="text-base">{expandedCategories[group.category] ? '⌃' : '⌄'}</span>
+                    </button>
+                    {expandedCategories[group.category] && (group.items.length > 0 ? (
                     <ul className="divide-y divide-[#edf0eb]">
                 {group.items.map((item) => (
                   <li key={item.id} className="flex flex-col gap-3 py-4">
                     <div className="flex items-center justify-between gap-3">
                       <div className="flex min-w-0 items-center gap-3">
                         <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-[#eef5eb] text-xl">
-                          {item.category === 'Fruit' ? '🍎' : item.category === 'Dairy' ? '🥛' : item.category === 'Protein' ? '🥚' : item.category === 'Vegetable' ? '🥦' : '🧺'}
+                          {item.category === 'Fruit' ? '🍎' : item.category === 'Dairy' ? '🥛' : item.category === 'Protein' ? '🥚' : item.category === 'Vegetable' ? '🥦' : item.category === 'Juices' ? '🧃' : '🧺'}
                         </span>
                         <div className="min-w-0">
                           <p className="truncate font-medium">{item.name}</p>
@@ -1140,6 +1161,9 @@ function capturePhoto() {
                   </li>
                 ))}
                     </ul>
+                    ) : (
+                      <p className="mb-4 rounded-lg bg-[#f8faf6] px-3 py-4 text-sm text-[#78877c]">No {group.category.toLowerCase()} saved yet.</p>
+                    ))}
                   </section>
                 ))}
               </div>
@@ -1281,6 +1305,14 @@ function capturePhoto() {
             </div>
           </section>
         </div>
+        </>
+        )}
+
+        {activeView === 'recipes' && (
+          <section className="mb-8 rounded-2xl border border-[#e4eae2] bg-white p-4 sm:p-6 md:p-7">
+            <RecipeSuggestions />
+          </section>
+        )}
 
         <footer className="mt-10 border-t border-[#e4eae2] py-6 text-center text-xs text-[#78877c]">
           FreshSpace · Local-first Smart Fridge AI · Your inventory stays on your computer
