@@ -1,25 +1,31 @@
 
 from contextlib import asynccontextmanager
+from typing import Annotated
 
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi import (
+    Depends,
+    FastAPI,
+    File,
+    HTTPException,
+    UploadFile,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
+
 from app.database import Base, engine, get_db
 from app.models import InventoryItem
-from app.schemas import InventoryCreate, InventoryResponse, InventoryUpdate
-
-from fastapi import File, UploadFile
+from app.schemas import (
+    ExpirySuggestionRequest,
+    ExpirySuggestionResponse,
+    InventoryCreate,
+    InventoryResponse,
+    InventoryUpdate,
+)
+from app.services.expiry_service import suggest_expiry
 from app.services.image_validator import read_validated_image
 from app.services.vision_service import detect_ingredients
-
-from app.schemas import ExpirySuggestionRequest, ExpirySuggestionResponse
-from app.services.expiry_service import suggest_expiry
-from starlette.concurrency import run_in_threadpool
-
-from typing import Annotated
-from fastapi import File, UploadFile
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -34,12 +40,16 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
-    allow_credentials=False,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["*"],
 )
 
 
@@ -114,6 +124,8 @@ def delete_inventory_item(
         "id": item_id,
     }
 
+
+
 @app.post(
     "/api/detect-ingredients",
     openapi_extra={
@@ -131,14 +143,43 @@ def delete_inventory_item(
                                     "type": "string",
                                     "format": "binary",
                                 },
-                            },
+                                "description": "Upload 1 to 3 fridge photos.",
+                            }
                         },
-                    },
-                },
+                    }
+                }
             },
-        },
+        }
     },
 )
+async def detect_fridge_ingredients(
+    files: Annotated[
+        list[UploadFile],
+        File(description="Upload 1 to 3 fridge photos."),
+    ],
+):
+    if not 1 <= len(files) <= 3:
+        raise HTTPException(
+            status_code=422,
+            detail="Upload between 1 and 3 fridge photos.",
+        )
+
+    images = [
+        await read_validated_image(file)
+        for file in files
+    ]
+
+    ingredients = await run_in_threadpool(
+        detect_ingredients,
+        images,
+    )
+
+    return {
+        "ingredients": ingredients,
+        "image_count": len(images),
+        "message": "Review the detected ingredients before saving them.",
+    }
+
 
 
 @app.post(

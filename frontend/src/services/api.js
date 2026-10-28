@@ -72,16 +72,48 @@ export async function deleteInventoryItem(itemId) {
   return response.json()
 }
 
-export function detectIngredients(files) {
+
+export async function detectIngredients(files) {
   const formData = new FormData()
 
-  files.forEach((file) => formData.append('files', file))
-
-  return request('/api/detect-ingredients', {
-    method: 'POST',
-    body: formData,
+  files.forEach((file) => {
+    formData.append('files', file)
   })
+
+  let response
+
+  try {
+    response = await fetch(
+      `${API_BASE_URL}/api/detect-ingredients`,
+      {
+        method: 'POST',
+        body: formData,
+      }
+    )
+  } catch (error) {
+    console.error('Detection network error:', error)
+
+    throw new Error(
+      'Cannot reach the backend. Check that FastAPI is running at ' +
+      API_BASE_URL + ' and that CORS allows the frontend origin.'
+    )
+  }
+
+  const data = await response.json().catch(() => ({}))
+
+  if (!response.ok) {
+    console.error('Detection API error:', response.status, data)
+
+    throw new Error(
+      data.detail || `Ingredient detection failed (HTTP ${response.status}).`
+    )
+  }
+
+  return data
 }
+
+
+
 
 
 export async function updateInventoryItem(itemId, updates) {
@@ -89,21 +121,33 @@ export async function updateInventoryItem(itemId, updates) {
     `${API_BASE_URL}/api/inventory/${itemId}`,
     {
       method: 'PATCH',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(updates),
     }
   )
 
-  const data = await response.json().catch(() => ({}))
+  const responseText = await response.text()
+  let data = {}
+
+  try {
+    data = responseText ? JSON.parse(responseText) : {}
+  } catch {
+    data = { detail: responseText }
+  }
 
   if (!response.ok) {
-    throw new Error(data.detail || 'Could not update inventory item.')
+    const detail =
+      typeof data.detail === 'string'
+        ? data.detail
+        : JSON.stringify(data.detail || data)
+
+    throw new Error(`HTTP ${response.status}: ${detail}`)
   }
 
   return data
 }
+
+
 
 export async function suggestExpiryDate({
   name,

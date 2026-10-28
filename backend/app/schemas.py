@@ -35,7 +35,7 @@ class InventoryUpdate(BaseModel):
     """Only supplied fields are updated; omitted fields remain unchanged."""
 
     name: str | None = Field(default=None, min_length=1, max_length=120)
-    quantity: float | None = Field(default=None, gt=0)
+    quantity: float | None = Field(default=None, ge=0)
     unit: str | None = Field(default=None, min_length=1, max_length=30)
     category: str | None = Field(default=None, max_length=60)
 

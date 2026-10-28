@@ -11,6 +11,7 @@ import {
 } from './services/api'
 
 import { getFreshness } from './utils/freshness'
+import { assessImageQuality } from './utils/imageQuality'
 
 const initialForm = {
   name: '',
@@ -24,6 +25,14 @@ const initialForm = {
 
 const categories = ['Vegetable', 'Fruit', 'Dairy', 'Protein', 'Other']
 
+function getStockStatus(quantity) {
+  const value = Number(quantity)
+  if (!Number.isFinite(value) || value < 0) return { label: 'Check quantity', className: 'bg-gray-100 text-gray-700' }
+  if (value === 0) return { label: 'Empty', className: 'bg-red-100 text-red-800' }
+  if (value <= 1) return { label: 'Low stock', className: 'bg-amber-100 text-amber-900' }
+  return { label: 'In stock', className: 'bg-emerald-100 text-emerald-800' }
+}
+
 function App() {
   const [items, setItems] = useState([])
   const [form, setForm] = useState(initialForm)
@@ -33,13 +42,22 @@ function App() {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+
   const fileInput = useRef(null)
   const photoUrls = useRef(new Set())
+  
+  const videoRef = useRef(null)
+  const cameraStreamRef = useRef(null)
+
+  const [cameraActive, setCameraActive] = useState(false)
+  const [cameraMessage, setCameraMessage] = useState('') 
+
   const [detected, setDetected] = useState([])
   const [detecting, setDetecting] = useState(false)
   const [suggestingExpiry, setSuggestingExpiry] = useState(false)
   const [suggestionExplanation, setSuggestionExplanation] = useState('')
-  const [editingDates, setEditingDates] = useState({})
+  const [editingItems, setEditingItems] = useState({})
+  const [stockFilter, setStockFilter] = useState('all')
 
   async function refreshInventory() {
     const data = await getInventory()
@@ -80,6 +98,21 @@ function App() {
 
   const categoryCount = new Set(items.map((item) => item.category).filter(Boolean)).size
 
+  const filteredItems = items.filter((item) => {
+    const status = getStockStatus(item.quantity).label
+    if (stockFilter === 'low') return status === 'Low stock'
+    if (stockFilter === 'empty') return status === 'Empty'
+    return true
+  })
+
+  const categoryOrder = ['Fruit', 'Vegetable', 'Dairy', 'Protein', 'Other', 'Uncategorized']
+  const groupedItems = categoryOrder
+    .map((category) => ({
+      category,
+      items: filteredItems.filter((item) => (item.category || 'Uncategorized') === category),
+    }))
+    .filter((group) => group.items.length > 0)
+
   async function handleAdd(event) {
     event.preventDefault()
     setError('')
@@ -91,8 +124,8 @@ function App() {
     }
 
     const quantity = Number(form.quantity)
-    if (!Number.isFinite(quantity) || quantity <= 0) {
-      setError('Quantity must be greater than zero.')
+    if (!Number.isFinite(quantity) || quantity < 0) {
+      setError('Quantity cannot be negative.')
       return
     }
 
@@ -151,8 +184,8 @@ function App() {
     }
   }
 
-  function changeItemDate(itemId, field, value) {
-    setEditingDates((current) => ({
+  function changeItemField(itemId, field, value) {
+    setEditingItems((current) => ({
       ...current,
       [itemId]: {
         ...(current[itemId] || {}),
@@ -161,13 +194,21 @@ function App() {
     }))
   }
 
-  async function saveItemDates(item) {
-    const changes = editingDates[item.id] || {}
+  async function saveItemChanges(item) {
+    const changes = editingItems[item.id] || {}
     setError('')
     setNotice('')
 
     try {
+      const quantity = Number(changes.quantity !== undefined ? changes.quantity : item.quantity)
+      if (!Number.isFinite(quantity) || quantity < 0) {
+        throw new Error('Quantity must be a valid number greater than or equal to zero.')
+      }
       const updated = await updateInventoryItem(item.id, {
+        name: (changes.name !== undefined ? changes.name : item.name).trim(),
+        quantity,
+        unit: changes.unit !== undefined ? changes.unit : item.unit,
+        category: changes.category !== undefined ? changes.category || null : item.category || null,
         purchase_date: changes.purchase_date !== undefined
           ? changes.purchase_date || null
           : item.purchase_date || null,
@@ -182,12 +223,12 @@ function App() {
       setItems((current) =>
         current.map((existing) => existing.id === item.id ? updated : existing),
       )
-      setEditingDates((current) => {
+      setEditingItems((current) => {
         const next = { ...current }
         delete next[item.id]
         return next
       })
-      setNotice(`Freshness details updated for ${item.name}.`)
+      setNotice(`Inventory details updated for ${updated.name}.`)
     } catch (err) {
       setError(`Could not update ${item.name}. ${err.message}`)
     }
@@ -216,6 +257,7 @@ async function handleDelete(item) {
   }
 }
 
+
 async function handleDetect() {
   setError('')
   setNotice('')
@@ -229,12 +271,42 @@ async function handleDetect() {
   setDetecting(true)
 
   try {
+    // Check photo quality before sending images to the AI.
+    const qualityResults = await Promise.all(
+      photos.map(({ file }) => assessImageQuality(file))
+    )
+
+    const qualityWarnings = qualityResults.flatMap((result, index) =>
+      result.warnings.map(
+        (warning) => `Photo ${index + 1}: ${warning}`
+      )
+    )
+
+    if (qualityWarnings.length > 0) {
+      setCameraMessage(qualityWarnings.join(' '))
+    } else {
+      setCameraMessage('')
+    }
+
+    // Continue detection even when quality warnings are present.
     const result = await detectIngredients(
       photos.map((photo) => photo.file),
     )
 
+    const ingredients = Array.isArray(result.ingredients)
+      ? result.ingredients
+      : []
+
+    if (ingredients.length === 0) {
+      setDetected([])
+      setNotice(
+        'No ingredients were detected. Try clearer, well-lit photos showing the fridge contents.'
+      )
+      return
+    }
+
     setDetected(
-      result.ingredients.map((item, index) => ({
+      ingredients.map((item, index) => ({
         ...item,
         reviewId: `${item.name}-${index}`,
         quantity: String(item.quantity),
@@ -246,7 +318,7 @@ async function handleDetect() {
     )
 
     setNotice(
-      `Analyzed ${result.image_count} photo(s). Review the candidates below.`,
+      `Analyzed ${result.image_count} photo(s). Review the candidates below.`
     )
   } catch (err) {
     setError(`Ingredient detection failed: ${err.message}`)
@@ -254,6 +326,7 @@ async function handleDetect() {
     setDetecting(false)
   }
 }
+
 
 function updateDetected(reviewId, field, value) {
   setDetected((current) =>
@@ -283,8 +356,8 @@ async function saveDetected() {
     for (const item of selected) {
       const quantity = Number(item.quantity)
 
-      if (!item.name.trim() || !Number.isFinite(quantity) || quantity <= 0) {
-        throw new Error('Each selected item needs a name and positive quantity.')
+      if (!item.name.trim() || !Number.isFinite(quantity) || quantity < 0) {
+        throw new Error('Each selected item needs a name and a non-negative quantity.')
       }
 
       const created = await addInventoryItem({
@@ -373,8 +446,187 @@ function removePhoto(id) {
 
 
   useEffect(() => {
-    return () => photos.forEach((photo) => URL.revokeObjectURL(photo.url))
-  }, [photos])
+  return () => {
+    cameraStreamRef.current?.getTracks().forEach((track) => track.stop())
+
+    photoUrls.current.forEach((url) => URL.revokeObjectURL(url))
+    photoUrls.current.clear()
+  }
+}, [])
+
+
+
+async function startCamera() {
+  setError('')
+  setCameraMessage('Requesting camera access…')
+
+  if (!navigator.mediaDevices?.getUserMedia) {
+    setCameraMessage(
+      'Camera access is unavailable. Open the app on localhost or HTTPS, or upload a photo instead.'
+    )
+    return
+  }
+
+  try {
+    // Stop any previous stream before opening a new one.
+    cameraStreamRef.current?.getTracks().forEach((track) => track.stop())
+
+    const video = videoRef.current
+
+if (!video) {
+  throw new Error(
+    'Camera preview element is missing. Please refresh the page and retry.'
+  )
+}
+
+const stream = await navigator.mediaDevices.getUserMedia({
+  audio: false,
+  video: {
+    facingMode: { ideal: 'environment' },
+    width: { ideal: 1280 },
+    height: { ideal: 720 },
+  },
+})
+
+cameraStreamRef.current = stream
+video.srcObject = stream
+
+    if (!video) {
+      stream.getTracks().forEach((track) => track.stop())
+      cameraStreamRef.current = null
+      throw new Error('Camera preview element is not available.')
+    }
+
+    video.srcObject = stream
+    video.muted = true
+    video.playsInline = true
+    video.autoplay = true
+
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        cleanup()
+        reject(new Error('Camera started, but no video frame arrived.'))
+      }, 10000)
+
+      function cleanup() {
+        clearTimeout(timeout)
+        video.removeEventListener('loadeddata', onLoaded)
+        video.removeEventListener('error', onError)
+      }
+
+      function onLoaded() {
+        cleanup()
+        resolve()
+      }
+
+      function onError() {
+        cleanup()
+        reject(new Error('The browser could not display the camera stream.'))
+      }
+
+      video.addEventListener('loadeddata', onLoaded, { once: true })
+      video.addEventListener('error', onError, { once: true })
+
+      // Handle a stream that already delivered a frame.
+      if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+        cleanup()
+        resolve()
+      }
+    })
+
+    await video.play()
+
+    setCameraActive(true)
+    setCameraMessage('Camera ready. Position your fridge contents and capture a photo.')
+  } catch (err) {
+    cameraStreamRef.current?.getTracks().forEach((track) => track.stop())
+    cameraStreamRef.current = null
+
+    const message =
+      err.name === 'NotAllowedError' || err.name === 'SecurityError'
+        ? 'Camera permission was denied. Allow camera access in browser settings.'
+        : err.name === 'NotFoundError'
+          ? 'No camera was found. Upload a photo instead.'
+          : err.name === 'NotReadableError'
+            ? 'The camera may be in use by another app. Close other camera apps and retry.'
+            : err.message || 'Could not start the camera.'
+
+    setCameraActive(false)
+    setCameraMessage(`${message} You can still upload photos.`)
+  }
+}
+
+function stopCamera() {
+  if (cameraStreamRef.current) {
+    cameraStreamRef.current.getTracks().forEach((track) => track.stop())
+    cameraStreamRef.current = null
+  }
+
+  if (videoRef.current) {
+    videoRef.current.srcObject = null
+  }
+
+  setCameraActive(false)
+  setCameraMessage('Camera stopped. You can reopen it or upload photos.')
+}
+
+function capturePhoto() {
+  const video = videoRef.current
+
+  if (!video || video.readyState < 2 || !video.videoWidth) {
+    setCameraMessage('Camera is not ready. Wait for the live preview and try again.')
+    return
+  }
+
+  if (photos.length >= 3) {
+    setCameraMessage('Maximum three photos allowed. Remove a photo before capturing another.')
+    return
+  }
+
+  const canvas = document.createElement('canvas')
+  canvas.width = video.videoWidth
+  canvas.height = video.videoHeight
+
+  const context = canvas.getContext('2d')
+
+  if (!context) {
+    setCameraMessage('Unable to capture the photo. Please try again.')
+    return
+  }
+
+  context.drawImage(video, 0, 0, canvas.width, canvas.height)
+
+  canvas.toBlob((blob) => {
+    if (!blob) {
+      setCameraMessage('Photo capture failed. Please try again.')
+      return
+    }
+
+    const file = new File(
+      [blob],
+      `fridge-${Date.now()}.jpg`,
+      { type: 'image/jpeg' }
+    )
+
+    const url = URL.createObjectURL(file)
+    const id = `${file.name}-${file.size}`
+
+    photoUrls.current.add(url)
+
+    setPhotos((current) => {
+      if (current.length >= 3) {
+        URL.revokeObjectURL(url)
+        photoUrls.current.delete(url)
+        return current
+      }
+
+      return [...current, { file, url, id }]
+    })
+
+    setCameraMessage('Photo captured successfully. Review it below.')
+  }, 'image/jpeg', 0.92)
+}
+
 
   return (
     <main className="min-h-screen bg-[#f6f8f5] text-[#203129]">
@@ -628,6 +880,19 @@ function removePhoto(id) {
               </button>
             </div>
 
+            <label className="mb-5 block text-sm">
+              Inventory filter
+              <select
+                value={stockFilter}
+                onChange={(event) => setStockFilter(event.target.value)}
+                className="mt-1.5 w-full rounded-lg border border-[#dce5da] bg-white px-3 py-2.5"
+              >
+                <option value="all">All ingredients</option>
+                <option value="low">Low stock only</option>
+                <option value="empty">Empty items only</option>
+              </select>
+            </label>
+
             <form onSubmit={handleAdd} className="mb-7 rounded-xl bg-[#f6f8f5] p-4">
               <h3 className="mb-4 text-sm font-semibold">Add an ingredient manually</h3>
               <div className="grid gap-3 sm:grid-cols-2">
@@ -655,7 +920,7 @@ function removePhoto(id) {
                   Quantity
                   <input
                     type="number"
-                    min="0.01"
+                    min="0"
                     step="any"
                     value={form.quantity}
                     onChange={(e) => setForm({ ...form, quantity: e.target.value })}
@@ -728,9 +993,19 @@ function removePhoto(id) {
                 <h3 className="mt-3 font-semibold">Your fridge list is empty</h3>
                 <p className="mt-1 text-sm text-[#78877c]">Add an ingredient above to get started.</p>
               </div>
+            ) : filteredItems.length === 0 ? (
+              <p className="rounded-xl border border-dashed border-[#dce5da] p-6 text-center text-sm text-[#78877c]">No ingredients match this stock filter.</p>
             ) : (
-              <ul className="divide-y divide-[#edf0eb]">
-                {items.map((item) => (
+              <div className="space-y-6">
+                {groupedItems.map((group) => (
+                  <section key={group.category} aria-label={`${group.category} inventory`}>
+                    <h3 className="mb-2 flex items-center gap-2 border-b border-[#e4eae2] pb-2 text-sm font-bold text-[#245c43]">
+                      <span>{group.category === 'Fruit' ? '🍎' : group.category === 'Vegetable' ? '🥦' : group.category === 'Dairy' ? '🥛' : group.category === 'Protein' ? '🥚' : group.category === 'Other' ? '🧺' : '📦'}</span>
+                      {group.category}
+                      <span className="rounded-full bg-[#eef5eb] px-2 py-0.5 text-xs font-medium">{group.items.length}</span>
+                    </h3>
+                    <ul className="divide-y divide-[#edf0eb]">
+                {group.items.map((item) => (
                   <li key={item.id} className="flex flex-col gap-3 py-4">
                     <div className="flex items-center justify-between gap-3">
                       <div className="flex min-w-0 items-center gap-3">
@@ -740,6 +1015,10 @@ function removePhoto(id) {
                         <div className="min-w-0">
                           <p className="truncate font-medium">{item.name}</p>
                           <p className="mt-0.5 text-xs text-[#78877c]">{item.category || 'Uncategorized'}</p>
+                          {(() => {
+                            const stock = getStockStatus(item.quantity)
+                            return <span className={`mt-2 inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${stock.className}`}>{stock.label}</span>
+                          })()}
                         </div>
                       </div>
                       <div className="flex shrink-0 items-center gap-3">
@@ -765,7 +1044,7 @@ function removePhoto(id) {
                           : freshness.status === 'fresh'
                             ? 'bg-emerald-100 text-emerald-800'
                             : 'bg-gray-100 text-gray-700'
-                      const changes = editingDates[item.id] || {}
+                      const changes = editingItems[item.id] || {}
                       return (
                         <div className="ml-0 rounded-xl bg-[#f8faf6] p-3">
                           <div className="mb-3 flex flex-wrap items-center gap-2">
@@ -776,13 +1055,53 @@ function removePhoto(id) {
                               {item.expiry_date ? `Expiry: ${item.expiry_date}` : 'Add an expiry date to track freshness.'}
                             </span>
                           </div>
-                          <div className="grid gap-3 sm:grid-cols-3">
+                          <div className="grid gap-3 sm:grid-cols-2">
+                            <label className="text-xs text-[#536459]">
+                              Ingredient name
+                              <input
+                                value={changes.name !== undefined ? changes.name : item.name}
+                                onChange={(e) => changeItemField(item.id, 'name', e.target.value)}
+                                maxLength={120}
+                                className="mt-1 w-full rounded-lg border border-[#dce5da] bg-white px-2 py-2 text-sm"
+                              />
+                            </label>
+                            <label className="text-xs text-[#536459]">
+                              Quantity
+                              <input
+                                type="number"
+                                min="0"
+                                step="any"
+                                value={changes.quantity !== undefined ? changes.quantity : String(item.quantity)}
+                                onChange={(e) => changeItemField(item.id, 'quantity', e.target.value)}
+                                className="mt-1 w-full rounded-lg border border-[#dce5da] bg-white px-2 py-2 text-sm"
+                              />
+                            </label>
+                            <label className="text-xs text-[#536459]">
+                              Unit
+                              <select
+                                value={changes.unit !== undefined ? changes.unit : item.unit}
+                                onChange={(e) => changeItemField(item.id, 'unit', e.target.value)}
+                                className="mt-1 w-full rounded-lg border border-[#dce5da] bg-white px-2 py-2 text-sm"
+                              >
+                                {['pieces', 'items', 'g', 'kg', 'ml', 'litres', 'packets', 'bunches'].map((unit) => <option key={unit} value={unit}>{unit}</option>)}
+                              </select>
+                            </label>
+                            <label className="text-xs text-[#536459]">
+                              Category
+                              <select
+                                value={changes.category !== undefined ? changes.category : (item.category || 'Other')}
+                                onChange={(e) => changeItemField(item.id, 'category', e.target.value)}
+                                className="mt-1 w-full rounded-lg border border-[#dce5da] bg-white px-2 py-2 text-sm"
+                              >
+                                {categories.map((category) => <option key={category} value={category}>{category}</option>)}
+                              </select>
+                            </label>
                             <label className="text-xs text-[#536459]">
                               Purchase date
                               <input
                                 type="date"
                                 value={changes.purchase_date !== undefined ? changes.purchase_date : (item.purchase_date || '')}
-                                onChange={(e) => changeItemDate(item.id, 'purchase_date', e.target.value)}
+                                onChange={(e) => changeItemField(item.id, 'purchase_date', e.target.value)}
                                 className="mt-1 w-full rounded-lg border border-[#dce5da] bg-white px-2 py-2 text-sm"
                               />
                             </label>
@@ -791,7 +1110,7 @@ function removePhoto(id) {
                               <input
                                 type="date"
                                 value={changes.expiry_date !== undefined ? changes.expiry_date : (item.expiry_date || '')}
-                                onChange={(e) => changeItemDate(item.id, 'expiry_date', e.target.value)}
+                                onChange={(e) => changeItemField(item.id, 'expiry_date', e.target.value)}
                                 className="mt-1 w-full rounded-lg border border-[#dce5da] bg-white px-2 py-2 text-sm"
                               />
                             </label>
@@ -799,7 +1118,7 @@ function removePhoto(id) {
                               Storage notes
                               <input
                                 value={changes.storage_notes !== undefined ? changes.storage_notes : (item.storage_notes || '')}
-                                onChange={(e) => changeItemDate(item.id, 'storage_notes', e.target.value)}
+                                onChange={(e) => changeItemField(item.id, 'storage_notes', e.target.value)}
                                 maxLength={500}
                                 placeholder="Storage details"
                                 className="mt-1 w-full rounded-lg border border-[#dce5da] bg-white px-2 py-2 text-sm"
@@ -808,18 +1127,21 @@ function removePhoto(id) {
                           </div>
                           <button
                             type="button"
-                            onClick={() => saveItemDates(item)}
+                            onClick={() => saveItemChanges(item)}
                             disabled={Object.keys(changes).length === 0}
                             className="mt-3 rounded-lg border border-[#b8cfb5] px-3 py-2 text-xs font-semibold text-[#245c43] hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
                           >
-                            Save freshness details
+                            Save inventory changes
                           </button>
                         </div>
                       )
                     })()}
                   </li>
                 ))}
-              </ul>
+                    </ul>
+                  </section>
+                ))}
+              </div>
             )}
           </section>
 
@@ -830,6 +1152,63 @@ function removePhoto(id) {
                 Select up to three photos of your fridge and review AI-detected ingredients before saving.
               </p>
             </div>
+             
+             
+<div className="mb-4 rounded-xl border border-[#dce5da] bg-[#f8faf6] p-4">
+  <h3 className="font-semibold">Scan using your camera</h3>
+
+  <p className="mt-1 text-sm text-[#78877c]">
+    Allow camera access, point your camera at the fridge, and capture up to three photos.
+  </p>
+
+  <video
+  ref={videoRef}
+  autoPlay
+  muted
+  playsInline
+  className={`mt-4 min-h-48 max-h-80 w-full rounded-xl bg-black object-contain ${
+    cameraActive ? 'block' : 'hidden'
+  }`}
+/>
+
+  <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
+    {!cameraActive ? (
+      <button
+        type="button"
+        onClick={startCamera}
+        disabled={photos.length >= 3}
+        className="rounded-lg bg-[#245c43] px-4 py-3 text-sm font-semibold text-white disabled:opacity-50"
+      >
+        Open camera
+      </button>
+    ) : (
+      <>
+        <button
+          type="button"
+          onClick={capturePhoto}
+          disabled={photos.length >= 3}
+          className="rounded-lg bg-[#245c43] px-4 py-3 text-sm font-semibold text-white disabled:opacity-50"
+        >
+          Capture photo ({photos.length}/3)
+        </button>
+
+        <button
+          type="button"
+          onClick={stopCamera}
+          className="rounded-lg border border-[#dce5da] bg-white px-4 py-3 text-sm font-semibold"
+        >
+          Stop camera
+        </button>
+      </>
+    )}
+  </div>
+
+  {cameraMessage && (
+    <p role="status" className="mt-3 text-sm text-[#245c43]">
+      {cameraMessage}
+    </p>
+  )}
+</div>
 
             <button
               type="button"
