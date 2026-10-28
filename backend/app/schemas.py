@@ -65,16 +65,25 @@ class RecipeSuggestionRequest(BaseModel):
     max_prep_minutes: int = Field(default=45, ge=5, le=240)
 
 
+
 class RecipeResponse(BaseModel):
     title: str
     description: str
     prep_minutes: int = Field(ge=1, le=1440)
     servings: int = Field(ge=1, le=12)
+
     available_ingredients: list[str]
     missing_ingredients: list[str]
     uses_expiring_soon: list[str]
     steps: list[str]
     disclaimer: str
+
+    # Approximate nutrition per serving
+    calories_kcal: float = Field(ge=0, le=10000)
+    protein_g: float = Field(ge=0, le=1000)
+    carbohydrates_g: float = Field(ge=0, le=1000)
+    fat_g: float = Field(ge=0, le=1000)
+
 
 
 class RecipeSuggestionResponse(BaseModel):

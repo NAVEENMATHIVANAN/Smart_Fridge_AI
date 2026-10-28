@@ -72,6 +72,10 @@ Rules:
 10. Make cooking instructions clear and practical.
 11. Do not invent inventory quantities.
 12. Return JSON only, with no Markdown or extra text.
+13. Estimate calories and macronutrients per serving, not for the entire recipe.
+14. Return numeric values for calories_kcal, protein_g, carbohydrates_g, and fat_g.
+15. Base estimates on the listed ingredients and reasonable portion sizes.
+16. State in the disclaimer that nutrition values are estimates and may vary with ingredient quantities and brands.
 
 Return this JSON structure:
 {{
@@ -85,10 +89,15 @@ Return this JSON structure:
       "missing_ingredients": ["ingredient not in inventory"],
       "uses_expiring_soon": ["inventory ingredient name"],
       "steps": ["Step 1", "Step 2"],
-      "disclaimer": "Check food condition and cook safely."
+      "calories_kcal": 350,
+      "protein_g": 18,
+      "carbohydrates_g": 42,
+      "fat_g": 12,
+      "disclaimer": "Nutrition values are estimates. Check food condition and cook safely."
     }}
   ]
 }}
+
 """
 
     response = client.chat.completions.create(
