@@ -8,11 +8,13 @@ import {
   getInventory,
   updateInventoryItem,
   suggestExpiryDate,
+  getStorageGuidance,
 } from './services/api'
 
 import { getFreshness } from './utils/freshness'
 import { assessImageQuality } from './utils/imageQuality'
 import RecipeSuggestions from './components/RecipeSuggestions'
+import WeeklyMealPlanner from './components/WeeklyMealPlanner'
 
 const initialForm = {
   name: '',
@@ -60,7 +62,115 @@ function App() {
   const [editingItems, setEditingItems] = useState({})
   const [stockFilter, setStockFilter] = useState('all')
   const [expandedCategories, setExpandedCategories] = useState({})
+  const [expandedItems, setExpandedItems] = useState({})
+  const [selectedStorageItems, setSelectedStorageItems] = useState([])
+  const [storageGuidance, setStorageGuidance] = useState({})
+  const [loadingStorageGuidance, setLoadingStorageGuidance] = useState(false)
+  const [foodPriorities, setFoodPriorities] = useState(null)
+  const [analyzingFoodPriorities, setAnalyzingFoodPriorities] = useState(false)
   const [activeView, setActiveView] = useState('inventory')
+  const [shoppingList, setShoppingList] = useState(() => {
+    try {
+      const saved = localStorage.getItem('freshspace-shopping-list')
+      const parsed = saved ? JSON.parse(saved) : []
+      return Array.isArray(parsed) ? parsed : []
+    } catch {
+      return []
+    }
+  })
+  const [newShoppingItem, setNewShoppingItem] = useState('')
+  const [shoppingNotice, setShoppingNotice] = useState('')
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('freshspace-shopping-list', JSON.stringify(shoppingList))
+    } catch {
+      // Keep the current in-memory list if browser storage is unavailable.
+    }
+  }, [shoppingList])
+
+  function addShoppingItems(names) {
+    const cleanNames = [...new Set(
+      (Array.isArray(names) ? names : [])
+        .map((name) => String(name || '').trim())
+        .filter(Boolean)
+        .map((name) => name.slice(0, 120))
+    )]
+
+    if (cleanNames.length === 0) {
+      setShoppingNotice('This recipe has no missing ingredients to add.')
+      return
+    }
+
+    const existingNames = new Set(
+      shoppingList.map((item) => item.name.toLocaleLowerCase())
+    )
+    const additions = cleanNames
+      .filter((name) => !existingNames.has(name.toLocaleLowerCase()))
+      .map((name) => ({
+        id: name.toLocaleLowerCase(),
+        name,
+        purchased: false,
+      }))
+
+    if (additions.length > 0) {
+      setShoppingList((current) => {
+        const currentNames = new Set(current.map((item) => item.name.toLocaleLowerCase()))
+        const freshAdditions = additions.filter(
+          (item) => !currentNames.has(item.name.toLocaleLowerCase())
+        )
+        return [...current, ...freshAdditions]
+      })
+    }
+    setShoppingNotice(
+      additions.length > 0
+        ? `Added ${additions.length} new item(s). Existing items were not duplicated.`
+        : 'Those ingredients are already on your shopping list.'
+    )
+  }
+
+  function addManualShoppingItem(event) {
+    event.preventDefault()
+    const name = newShoppingItem.trim()
+    if (!name) return
+    addShoppingItems([name])
+    setNewShoppingItem('')
+  }
+
+  function toggleShoppingItem(itemId) {
+    setShoppingList((current) =>
+      current.map((item) => item.id === itemId
+        ? { ...item, purchased: !item.purchased }
+        : item)
+    )
+  }
+
+  function removeShoppingItem(itemId) {
+    setShoppingList((current) => current.filter((item) => item.id !== itemId))
+  }
+
+  function clearPurchasedItems() {
+    setShoppingList((current) => current.filter((item) => !item.purchased))
+    setShoppingNotice('Purchased items were cleared from the list.')
+  }
+
+  async function copyShoppingList() {
+    const text = shoppingList
+      .map((item) => `${item.purchased ? '[x]' : '[ ]'} ${item.name}`)
+      .join('\\n')
+
+    if (!text) {
+      setShoppingNotice('Your shopping list is empty.')
+      return
+    }
+
+    try {
+      await navigator.clipboard.writeText(text)
+      setShoppingNotice('Shopping list copied to clipboard.')
+    } catch {
+      setShoppingNotice('Clipboard access is unavailable. You can still select and copy the list.')
+    }
+  }
 
   async function refreshInventory() {
     const data = await getInventory()
@@ -113,6 +223,113 @@ function App() {
     category,
     items: filteredItems.filter((item) => (item.category || 'Uncategorized') === category),
   }))
+
+
+  
+const expiryAlerts = useMemo(() => {
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+
+  const threeDaysFromNow = new Date(today)
+  threeDaysFromNow.setDate(today.getDate() + 3)
+
+  return items.reduce(
+    (result, item) => {
+      if (!item.expiry_date) return result
+
+      const expiryDate = new Date(`${item.expiry_date}T00:00:00`)
+
+      if (Number.isNaN(expiryDate.getTime())) return result
+
+      if (expiryDate < today) {
+        result.expired.push(item)
+      } else if (expiryDate <= threeDaysFromNow) {
+        result.expiringSoon.push(item)
+      } else {
+        result.fresh.push(item)
+      }
+
+      return result
+    },
+    {
+      expired: [],
+      expiringSoon: [],
+      fresh: [],
+    }
+  )
+}, [items])
+
+  async function analyzeFoodPriorities() {
+    if (items.length === 0) {
+      setNotice('Add ingredients to your inventory before checking food priorities.')
+      return
+    }
+
+    setAnalyzingFoodPriorities(true)
+    setError('')
+    setNotice('')
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+    const results = []
+
+    try {
+      for (const item of items) {
+        let expiryDate = item.expiry_date || null
+        let source = 'Recorded expiry date'
+        let explanation = ''
+
+        if (!expiryDate) {
+          try {
+            const suggestion = await suggestExpiryDate({
+              name: item.name,
+              category: item.category || null,
+              purchase_date: item.purchase_date || null,
+              storage_notes: item.storage_notes || null,
+            })
+            expiryDate = suggestion.suggested_expiry_date || null
+            source = 'AI estimate — expiry date not recorded'
+            explanation = suggestion.explanation || ''
+          } catch (err) {
+            results.push({
+              ...item,
+              priority: 'unknown',
+              priorityLabel: 'Needs review',
+              priorityNote: `Could not estimate an expiry date: ${err.message}`,
+              source: 'No recorded expiry date',
+            })
+            continue
+          }
+        }
+
+        const parsedExpiry = expiryDate ? new Date(`${expiryDate}T00:00:00`) : null
+        if (!parsedExpiry || Number.isNaN(parsedExpiry.getTime())) {
+          results.push({ ...item, priority: 'unknown', priorityLabel: 'Needs review', priorityNote: 'No reliable expiry date is available.', source })
+          continue
+        }
+
+        const daysRemaining = Math.ceil((parsedExpiry - today) / 86400000)
+        const priority = daysRemaining < 0 ? 'expired' : daysRemaining <= 3 ? 'urgent' : daysRemaining <= 7 ? 'soon' : 'later'
+        const priorityLabel = priority === 'expired' ? 'Past estimated/recorded expiry' : priority === 'urgent' ? 'Use first' : priority === 'soon' ? 'Use soon' : 'Use later'
+        results.push({
+          ...item,
+          priority,
+          priorityLabel,
+          daysRemaining,
+          priorityExpiry: expiryDate,
+          source,
+          priorityNote: explanation,
+        })
+      }
+
+      const order = { expired: 0, urgent: 1, soon: 2, later: 3, unknown: 4 }
+      results.sort((a, b) => order[a.priority] - order[b.priority] || (a.daysRemaining ?? 9999) - (b.daysRemaining ?? 9999))
+      setFoodPriorities(results)
+      setNotice('Food-use priorities are ready. AI-estimated dates are suggestions, not confirmed expiry dates.')
+    } finally {
+      setAnalyzingFoodPriorities(false)
+    }
+  }
+
 
   async function handleAdd(event) {
     event.preventDefault()
@@ -193,6 +410,60 @@ function App() {
         [field]: value,
       },
     }))
+  }
+
+  function toggleStorageItem(itemId) {
+    setSelectedStorageItems((current) =>
+      current.includes(itemId)
+        ? current.filter((id) => id !== itemId)
+        : [...current, itemId],
+    )
+  }
+
+  function selectAllStorageItems() {
+    setSelectedStorageItems(items.map((item) => item.id))
+  }
+
+  async function handleGetStorageGuidance() {
+    const selected = items.filter((item) => selectedStorageItems.includes(item.id))
+    if (selected.length === 0) {
+      setError('Select at least one inventory item for storage guidance.')
+      return
+    }
+
+    setError('')
+    setNotice('')
+    setLoadingStorageGuidance(true)
+
+    const results = await Promise.allSettled(
+      selected.map((item) => getStorageGuidance({
+        ingredient: item.name,
+        category: item.category || null,
+        storage_notes: item.storage_notes || null,
+      })),
+    )
+
+    const nextGuidance = {}
+    const failures = []
+    results.forEach((result, index) => {
+      const item = selected[index]
+      if (result.status === 'fulfilled') {
+        nextGuidance[item.id] = result.value
+      } else {
+        failures.push(`${item.name}: ${result.reason?.message || 'Request failed'}`)
+      }
+    })
+
+    setStorageGuidance((current) => ({ ...current, ...nextGuidance }))
+    setSelectedStorageItems([])
+    setLoadingStorageGuidance(false)
+
+    if (failures.length) {
+      setError(`Guidance could not be generated for: ${failures.join('; ')}`)
+    }
+    if (Object.keys(nextGuidance).length) {
+      setNotice(`Generated storage guidance for ${Object.keys(nextGuidance).length} item(s).`)
+    }
   }
 
   async function saveItemChanges(item) {
@@ -686,6 +957,9 @@ function capturePhoto() {
           <button type="button" onClick={() => setActiveView('recipes')} className={`rounded-xl px-4 py-2.5 text-sm font-semibold transition ${activeView === 'recipes' ? 'bg-[#245c43] text-white' : 'text-[#536459] hover:bg-[#f1f6ef]'}`}>
             🍲 Recipe ideas
           </button>
+          <button type="button" onClick={() => setActiveView('planner')} className={`rounded-xl px-4 py-2.5 text-sm font-semibold transition ${activeView === 'planner' ? 'bg-[#245c43] text-white' : 'text-[#536459] hover:bg-[#f1f6ef]'}`}>
+            📅 Weekly planner
+          </button>
           <button type="button" onClick={() => { setActiveView('inventory'); setTimeout(() => document.getElementById('photo-upload')?.scrollIntoView({ behavior: 'smooth' }), 0) }} className="rounded-xl px-4 py-2.5 text-sm font-semibold text-[#536459] transition hover:bg-[#f1f6ef]">
             📷 Scan fridge
           </button>
@@ -878,6 +1152,105 @@ function capturePhoto() {
               <p className="mt-3 text-3xl font-semibold">{stat.value}</p>
             </article>
           ))}
+
+          
+<section className="mb-9 rounded-2xl border border-[#e4eae2] bg-white p-5 md:p-7">
+  <div className="mb-5">
+    <h2 className="text-xl font-semibold">Freshness overview</h2>
+    <p className="mt-1 text-sm text-[#78877c]">
+      Monitor ingredients using their recorded expiry dates.
+    </p>
+  </div>
+
+  <div className="grid gap-3 sm:grid-cols-3">
+    <div className="rounded-xl border border-red-200 bg-red-50 p-4">
+      <p className="text-sm font-medium text-red-800">Expired</p>
+      <p className="mt-2 text-3xl font-bold text-red-900">
+        {expiryAlerts.expired.length}
+      </p>
+    </div>
+
+    <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
+      <p className="text-sm font-medium text-amber-800">Expiring soon</p>
+      <p className="mt-2 text-3xl font-bold text-amber-900">
+        {expiryAlerts.expiringSoon.length}
+      </p>
+    </div>
+
+    <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+      <p className="text-sm font-medium text-emerald-800">Fresh</p>
+      <p className="mt-2 text-3xl font-bold text-emerald-900">
+        {expiryAlerts.fresh.length}
+      </p>
+    </div>
+  </div>
+
+  {(expiryAlerts.expired.length > 0 ||
+    expiryAlerts.expiringSoon.length > 0) && (
+    <div className="mt-5 space-y-3">
+      {expiryAlerts.expired.map((item) => (
+        <div
+          key={`expired-${item.id}`}
+          className="rounded-lg bg-red-50 p-3 text-sm text-red-800"
+        >
+          <strong>{item.name}</strong> — recorded expiry date has passed.
+          Check its condition and discard it if unsafe.
+        </div>
+      ))}
+
+      {expiryAlerts.expiringSoon.map((item) => (
+        <div
+          key={`soon-${item.id}`}
+          className="rounded-lg bg-amber-50 p-3 text-sm text-amber-900"
+        >
+          <strong>{item.name}</strong> — approaching its recorded expiry date.
+        </div>
+      ))}
+    </div>
+  )}
+
+  {expiryAlerts.expired.length === 0 &&
+    expiryAlerts.expiringSoon.length === 0 && (
+      <p className="mt-4 text-sm text-emerald-700">
+        No recorded expiry alerts right now.
+      </p>
+    )}
+</section>
+
+<section className="mb-9 rounded-2xl border border-[#e4eae2] bg-white p-5 md:p-7">
+  <div className="flex flex-wrap items-center justify-between gap-3">
+    <div>
+      <h2 className="text-xl font-semibold">Smart food-use priorities</h2>
+      <p className="mt-1 max-w-2xl text-sm text-[#78877c]">Recorded expiry dates determine the order. If an item has no expiry date, AI estimates one using its name, category, purchase date, and storage notes.</p>
+    </div>
+    <button type="button" onClick={analyzeFoodPriorities} disabled={analyzingFoodPriorities || loading || items.length === 0} className="rounded-xl bg-[#245c43] px-4 py-3 text-sm font-semibold text-white hover:bg-[#173e30] disabled:cursor-not-allowed disabled:opacity-50">
+      {analyzingFoodPriorities ? 'Checking inventory…' : '✨ Analyze food priorities'}
+    </button>
+  </div>
+
+  {foodPriorities && (
+    <div className="mt-5 space-y-3">
+      {foodPriorities.map((item) => {
+        const priorityClass = item.priority === 'expired' ? 'border-red-200 bg-red-50 text-red-900' : item.priority === 'urgent' ? 'border-amber-200 bg-amber-50 text-amber-900' : item.priority === 'soon' ? 'border-yellow-200 bg-yellow-50 text-yellow-900' : item.priority === 'later' ? 'border-emerald-200 bg-emerald-50 text-emerald-900' : 'border-gray-200 bg-gray-50 text-gray-800'
+        return (
+          <article key={item.id} className={`rounded-xl border p-4 ${priorityClass}`}>
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <div>
+                <h3 className="font-semibold">{item.name}</h3>
+                <p className="mt-1 text-sm">{item.priorityLabel}</p>
+              </div>
+              <span className="rounded-full bg-white/70 px-3 py-1 text-xs font-semibold">{item.priorityExpiry ? `Date: ${item.priorityExpiry}` : 'Date unavailable'}</span>
+            </div>
+            <p className="mt-2 text-xs opacity-80">{item.source}{item.daysRemaining !== undefined ? ` · ${item.daysRemaining < 0 ? `${Math.abs(item.daysRemaining)} day(s) past date` : `${item.daysRemaining} day(s) remaining`}` : ''}</p>
+            {item.priorityNote && <p className="mt-2 text-xs opacity-80">{item.priorityNote}</p>}
+            {item.priority === 'expired' && <p className="mt-2 text-xs font-medium">Check the food's condition carefully. A date alone cannot determine whether food is safe.</p>}
+          </article>
+        )
+      })}
+    </div>
+  )}
+</section>
+
         </section>
 
         <div className="grid items-start gap-7 lg:grid-cols-[1.15fr_0.85fr]">
@@ -1000,6 +1373,33 @@ function capturePhoto() {
               </button>
             </form>
 
+            {items.length > 0 && (
+              <section className="mb-5 rounded-xl border border-[#dce5da] bg-[#f8faf6] p-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-semibold text-[#245c43]">AI storage guidance</h3>
+                    <p className="mt-1 text-xs text-[#78877c]">
+                      Select one, a few, or all inventory items to get storage recommendations together.
+                    </p>
+                    <p className="mt-1 text-xs font-medium text-[#536459]">
+                      {selectedStorageItems.length} item(s) selected
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button type="button" onClick={selectAllStorageItems} className="rounded-lg border border-[#b8cfb5] bg-white px-3 py-2 text-xs font-semibold text-[#245c43] hover:bg-[#eef5eb]">
+                      Select all inventory
+                    </button>
+                    <button type="button" onClick={() => setSelectedStorageItems([])} disabled={selectedStorageItems.length === 0} className="rounded-lg border border-[#dce5da] bg-white px-3 py-2 text-xs font-semibold text-[#536459] disabled:opacity-50">
+                      Clear selection
+                    </button>
+                    <button type="button" onClick={handleGetStorageGuidance} disabled={loadingStorageGuidance || selectedStorageItems.length === 0 || health !== 'connected'} className="rounded-lg bg-[#245c43] px-4 py-2 text-xs font-semibold text-white hover:bg-[#173e30] disabled:cursor-not-allowed disabled:opacity-50">
+                      {loadingStorageGuidance ? 'Generating guidance…' : `Get guidance (${selectedStorageItems.length})`}
+                    </button>
+                  </div>
+                </div>
+              </section>
+            )}
+
             {loading ? (
               <p className="py-8 text-center text-sm text-[#78877c]">Loading inventory…</p>
             ) : items.length === 0 ? (
@@ -1034,6 +1434,13 @@ function capturePhoto() {
                         <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-[#eef5eb] text-xl">
                           {item.category === 'Fruit' ? '🍎' : item.category === 'Dairy' ? '🥛' : item.category === 'Protein' ? '🥚' : item.category === 'Vegetable' ? '🥦' : item.category === 'Juices' ? '🧃' : '🧺'}
                         </span>
+                        <input
+                          type="checkbox"
+                          checked={selectedStorageItems.includes(item.id)}
+                          onChange={() => toggleStorageItem(item.id)}
+                          aria-label={`Select ${item.name} for storage guidance`}
+                          className="h-4 w-4 shrink-0 accent-emerald-700"
+                        />
                         <div className="min-w-0">
                           <p className="truncate font-medium">{item.name}</p>
                           <p className="mt-0.5 text-xs text-[#78877c]">{item.category || 'Uncategorized'}</p>
@@ -1067,94 +1474,115 @@ function capturePhoto() {
                             ? 'bg-emerald-100 text-emerald-800'
                             : 'bg-gray-100 text-gray-700'
                       const changes = editingItems[item.id] || {}
+                      const isExpanded = Boolean(expandedItems[item.id])
+
                       return (
-                        <div className="ml-0 rounded-xl bg-[#f8faf6] p-3">
-                          <div className="mb-3 flex flex-wrap items-center gap-2">
-                            <span className={`rounded-full px-3 py-1 text-xs font-semibold ${badgeClass}`}>
-                              {freshness.label}
-                            </span>
-                            <span className="text-xs text-[#78877c]">
-                              {item.expiry_date ? `Expiry: ${item.expiry_date}` : 'Add an expiry date to track freshness.'}
-                            </span>
+                        <div className="ml-0">
+                          <div className="flex flex-wrap items-center justify-between gap-3">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className={`rounded-full px-3 py-1 text-xs font-semibold ${badgeClass}`}>
+                                {freshness.label}
+                              </span>
+                              <span className="text-xs text-[#78877c]">
+                                {item.expiry_date ? `Expiry: ${item.expiry_date}` : 'Expiry date not set'}
+                              </span>
+                            </div>
+                            <button
+                              type="button"
+                              aria-expanded={isExpanded}
+                              onClick={() => setExpandedItems((current) => ({
+                                ...current,
+                                [item.id]: !current[item.id],
+                              }))}
+                              className="rounded-lg border border-[#b8cfb5] px-3 py-2 text-xs font-semibold text-[#245c43] hover:bg-[#eef5eb]"
+                            >
+                              {isExpanded ? 'Hide details ▲' : 'View details ▼'}
+                            </button>
                           </div>
-                          <div className="grid gap-3 sm:grid-cols-2">
-                            <label className="text-xs text-[#536459]">
-                              Ingredient name
-                              <input
-                                value={changes.name !== undefined ? changes.name : item.name}
-                                onChange={(e) => changeItemField(item.id, 'name', e.target.value)}
-                                maxLength={120}
-                                className="mt-1 w-full rounded-lg border border-[#dce5da] bg-white px-2 py-2 text-sm"
-                              />
-                            </label>
-                            <label className="text-xs text-[#536459]">
-                              Quantity
-                              <input
-                                type="number"
-                                min="0"
-                                step="any"
-                                value={changes.quantity !== undefined ? changes.quantity : String(item.quantity)}
-                                onChange={(e) => changeItemField(item.id, 'quantity', e.target.value)}
-                                className="mt-1 w-full rounded-lg border border-[#dce5da] bg-white px-2 py-2 text-sm"
-                              />
-                            </label>
-                            <label className="text-xs text-[#536459]">
-                              Unit
-                              <select
-                                value={changes.unit !== undefined ? changes.unit : item.unit}
-                                onChange={(e) => changeItemField(item.id, 'unit', e.target.value)}
-                                className="mt-1 w-full rounded-lg border border-[#dce5da] bg-white px-2 py-2 text-sm"
-                              >
-                                {['pieces', 'items', 'g', 'kg', 'ml', 'litres', 'packets', 'bunches'].map((unit) => <option key={unit} value={unit}>{unit}</option>)}
-                              </select>
-                            </label>
-                            <label className="text-xs text-[#536459]">
-                              Category
-                              <select
-                                value={changes.category !== undefined ? changes.category : (item.category || 'Other')}
-                                onChange={(e) => changeItemField(item.id, 'category', e.target.value)}
-                                className="mt-1 w-full rounded-lg border border-[#dce5da] bg-white px-2 py-2 text-sm"
-                              >
-                                {categories.map((category) => <option key={category} value={category}>{category}</option>)}
-                              </select>
-                            </label>
-                            <label className="text-xs text-[#536459]">
-                              Purchase date
-                              <input
-                                type="date"
-                                value={changes.purchase_date !== undefined ? changes.purchase_date : (item.purchase_date || '')}
-                                onChange={(e) => changeItemField(item.id, 'purchase_date', e.target.value)}
-                                className="mt-1 w-full rounded-lg border border-[#dce5da] bg-white px-2 py-2 text-sm"
-                              />
-                            </label>
-                            <label className="text-xs text-[#536459]">
-                              Expiry date
-                              <input
-                                type="date"
-                                value={changes.expiry_date !== undefined ? changes.expiry_date : (item.expiry_date || '')}
-                                onChange={(e) => changeItemField(item.id, 'expiry_date', e.target.value)}
-                                className="mt-1 w-full rounded-lg border border-[#dce5da] bg-white px-2 py-2 text-sm"
-                              />
-                            </label>
-                            <label className="text-xs text-[#536459]">
-                              Storage notes
-                              <input
-                                value={changes.storage_notes !== undefined ? changes.storage_notes : (item.storage_notes || '')}
-                                onChange={(e) => changeItemField(item.id, 'storage_notes', e.target.value)}
-                                maxLength={500}
-                                placeholder="Storage details"
-                                className="mt-1 w-full rounded-lg border border-[#dce5da] bg-white px-2 py-2 text-sm"
-                              />
-                            </label>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => saveItemChanges(item)}
-                            disabled={Object.keys(changes).length === 0}
-                            className="mt-3 rounded-lg border border-[#b8cfb5] px-3 py-2 text-xs font-semibold text-[#245c43] hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
-                          >
-                            Save inventory changes
-                          </button>
+
+                          {isExpanded && (
+                            <div className="mt-3 rounded-xl bg-[#f8faf6] p-4">
+                              <h4 className="mb-3 text-sm font-semibold text-[#245c43]">
+                                {item.name} — inventory details
+                              </h4>
+                              <div className="grid gap-3 sm:grid-cols-2">
+                                <label className="text-xs text-[#536459]">
+                                  Quantity
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    step="any"
+                                    value={changes.quantity !== undefined ? changes.quantity : String(item.quantity)}
+                                    onChange={(e) => changeItemField(item.id, 'quantity', e.target.value)}
+                                    className="mt-1 w-full rounded-lg border border-[#dce5da] bg-white px-2 py-2 text-sm"
+                                  />
+                                </label>
+                                <label className="text-xs text-[#536459]">
+                                  Unit
+                                  <select
+                                    value={changes.unit !== undefined ? changes.unit : item.unit}
+                                    onChange={(e) => changeItemField(item.id, 'unit', e.target.value)}
+                                    className="mt-1 w-full rounded-lg border border-[#dce5da] bg-white px-2 py-2 text-sm"
+                                  >
+                                    {['pieces', 'items', 'g', 'kg', 'ml', 'litres', 'packets', 'bunches'].map((unit) => (
+                                      <option key={unit} value={unit}>{unit}</option>
+                                    ))}
+                                  </select>
+                                </label>
+                                <label className="text-xs text-[#536459]">
+                                  Purchase date
+                                  <input
+                                    type="date"
+                                    value={changes.purchase_date !== undefined ? changes.purchase_date : (item.purchase_date || '')}
+                                    onChange={(e) => changeItemField(item.id, 'purchase_date', e.target.value)}
+                                    className="mt-1 w-full rounded-lg border border-[#dce5da] bg-white px-2 py-2 text-sm"
+                                  />
+                                </label>
+                                <label className="text-xs text-[#536459]">
+                                  Expiry date
+                                  <input
+                                    type="date"
+                                    value={changes.expiry_date !== undefined ? changes.expiry_date : (item.expiry_date || '')}
+                                    onChange={(e) => changeItemField(item.id, 'expiry_date', e.target.value)}
+                                    className="mt-1 w-full rounded-lg border border-[#dce5da] bg-white px-2 py-2 text-sm"
+                                  />
+                                </label>
+                                <label className="text-xs text-[#536459] sm:col-span-2">
+                                  Storage notes
+                                  <textarea
+                                    value={changes.storage_notes !== undefined ? changes.storage_notes : (item.storage_notes || '')}
+                                    onChange={(e) => changeItemField(item.id, 'storage_notes', e.target.value)}
+                                    maxLength={500}
+                                    rows={2}
+                                    placeholder="e.g. Keep refrigerated; washed and dried"
+                                    className="mt-1 w-full rounded-lg border border-[#dce5da] bg-white px-2 py-2 text-sm"
+                                  />
+                                </label>
+                              </div>
+                              <div className="mt-3 flex flex-wrap items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => saveItemChanges(item)}
+                                  disabled={Object.keys(changes).length === 0}
+                                  className="rounded-lg bg-[#245c43] px-4 py-2.5 text-xs font-semibold text-white hover:bg-[#173e30] disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                  Save details
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setEditingItems((current) => {
+                                    const next = { ...current }
+                                    delete next[item.id]
+                                    return next
+                                  })}
+                                  disabled={Object.keys(changes).length === 0}
+                                  className="rounded-lg border border-[#dce5da] px-4 py-2.5 text-xs font-semibold text-[#536459] hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                  Discard changes
+                                </button>
+                              </div>
+                            </div>
+                          )}
                         </div>
                       )
                     })()}
@@ -1167,6 +1595,66 @@ function capturePhoto() {
                   </section>
                 ))}
               </div>
+            )}
+
+            {Object.keys(storageGuidance).length > 0 && (
+              <section className="mt-7 space-y-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h3 className="text-lg font-semibold text-[#245c43]">Storage guidance results</h3>
+                    <p className="text-xs text-[#78877c]">AI recommendations are estimates; always check the food's actual condition.</p>
+                  </div>
+                  <button type="button" onClick={() => setStorageGuidance({})} className="rounded-lg border border-[#dce5da] px-3 py-2 text-xs font-semibold text-[#536459] hover:bg-[#f8faf6]">
+                    Clear results
+                  </button>
+                </div>
+                {items.filter((item) => storageGuidance[item.id]).map((item) => {
+                  const guidance = storageGuidance[item.id]
+                  return (
+                    <article key={item.id} className="rounded-xl border border-[#dce5da] bg-white p-4">
+                      <h4 className="font-semibold text-[#245c43]">{guidance.ingredient || item.name}</h4>
+                      <p className="mt-2 text-sm">{guidance.answer}</p>
+                      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                        <div className="rounded-lg bg-[#f8faf6] p-3">
+                          <p className="text-xs font-semibold text-[#536459]">Storage method</p>
+                          <p className="mt-1 text-sm">{guidance.storage_method}</p>
+                        </div>
+                        <div className="rounded-lg bg-[#f8faf6] p-3">
+                          <p className="text-xs font-semibold text-[#536459]">Temperature</p>
+                          <p className="mt-1 text-sm">{guidance.temperature}</p>
+                        </div>
+                        <div className="rounded-lg bg-[#f8faf6] p-3">
+                          <p className="text-xs font-semibold text-[#536459]">Storage duration</p>
+                          <p className="mt-1 text-sm">{guidance.storage_duration}</p>
+                        </div>
+                        <div className="rounded-lg bg-[#f8faf6] p-3">
+                          <p className="text-xs font-semibold text-[#536459]">Freezing</p>
+                          <p className="mt-1 text-sm">{guidance.freezing_guidance}</p>
+                        </div>
+                      </div>
+                      {Array.isArray(guidance.preparation) && guidance.preparation.length > 0 && (
+                        <div className="mt-3">
+                          <p className="text-xs font-semibold text-[#536459]">Preparation</p>
+                          <ul className="mt-1 list-disc space-y-1 pl-5 text-sm">{guidance.preparation.map((tip, index) => <li key={index}>{tip}</li>)}</ul>
+                        </div>
+                      )}
+                      {Array.isArray(guidance.spoilage_signs) && guidance.spoilage_signs.length > 0 && (
+                        <div className="mt-3">
+                          <p className="text-xs font-semibold text-[#536459]">Signs of spoilage</p>
+                          <ul className="mt-1 list-disc space-y-1 pl-5 text-sm">{guidance.spoilage_signs.map((tip, index) => <li key={index}>{tip}</li>)}</ul>
+                        </div>
+                      )}
+                      {Array.isArray(guidance.additional_tips) && guidance.additional_tips.length > 0 && (
+                        <div className="mt-3">
+                          <p className="text-xs font-semibold text-[#536459]">Additional tips</p>
+                          <ul className="mt-1 list-disc space-y-1 pl-5 text-sm">{guidance.additional_tips.map((tip, index) => <li key={index}>{tip}</li>)}</ul>
+                        </div>
+                      )}
+                      <p className="mt-3 rounded-lg bg-amber-50 p-3 text-xs leading-5 text-amber-900">{guidance.disclaimer}</p>
+                    </article>
+                  )
+                })}
+              </section>
             )}
           </section>
 
@@ -1310,7 +1798,111 @@ function capturePhoto() {
 
         {activeView === 'recipes' && (
           <section className="mb-8 rounded-2xl border border-[#e4eae2] bg-white p-4 sm:p-6 md:p-7">
-            <RecipeSuggestions />
+            <RecipeSuggestions
+              priorityIngredients={(foodPriorities || [])
+                .filter((item) => item.priority === 'urgent' || item.priority === 'soon')
+                .map((item) => item.name)}
+              onAddMissingIngredients={addShoppingItems}
+            />
+
+            <section className="mt-8 rounded-2xl border border-[#dce5da] bg-[#f8faf6] p-5 md:p-6">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <p className="text-sm font-medium uppercase tracking-wider text-emerald-700">FreshSpace</p>
+                  <h3 className="mt-1 text-xl font-bold text-[#203129]">Shopping list</h3>
+                  <p className="mt-1 text-sm text-[#78877c]">
+                    Collect missing ingredients from recipes and keep track of what you have purchased.
+                  </p>
+                </div>
+                <span className="rounded-full bg-white px-3 py-1.5 text-sm font-semibold text-[#245c43]">
+                  {shoppingList.filter((item) => !item.purchased).length} to buy
+                </span>
+              </div>
+
+              <form onSubmit={addManualShoppingItem} className="mt-4 flex flex-col gap-2 sm:flex-row">
+                <label className="sr-only" htmlFor="new-shopping-item">Add an item</label>
+                <input
+                  id="new-shopping-item"
+                  value={newShoppingItem}
+                  onChange={(event) => setNewShoppingItem(event.target.value)}
+                  maxLength={120}
+                  placeholder="Add an item manually, e.g. Olive oil"
+                  className="min-w-0 flex-1 rounded-lg border border-[#dce5da] bg-white px-3 py-2.5 text-sm"
+                />
+                <button
+                  type="submit"
+                  disabled={!newShoppingItem.trim()}
+                  className="rounded-lg bg-[#245c43] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#173e30] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Add item
+                </button>
+              </form>
+
+              {shoppingNotice && (
+                <p role="status" className="mt-3 text-sm text-[#536459]">{shoppingNotice}</p>
+              )}
+
+              {shoppingList.length === 0 ? (
+                <p className="mt-5 rounded-xl border border-dashed border-[#cdddc9] bg-white p-5 text-center text-sm text-[#78877c]">
+                  Your shopping list is empty. Generate recipes and add their missing ingredients here.
+                </p>
+              ) : (
+                <>
+                  <ul className="mt-4 divide-y divide-[#e4eae2] rounded-xl border border-[#e4eae2] bg-white px-4">
+                    {shoppingList.map((item) => (
+                      <li key={item.id} className="flex items-center gap-3 py-3">
+                        <input
+                          type="checkbox"
+                          checked={item.purchased}
+                          onChange={() => toggleShoppingItem(item.id)}
+                          aria-label={`Mark ${item.name} as ${item.purchased ? 'not purchased' : 'purchased'}`}
+                          className="h-4 w-4 accent-emerald-700"
+                        />
+                        <span className={`min-w-0 flex-1 text-sm ${item.purchased ? 'text-[#9aa59c] line-through' : 'text-[#203129]'}`}>
+                          {item.name}
+                        </span>
+                        <span className={`text-xs ${item.purchased ? 'text-emerald-700' : 'text-[#78877c]'}`}>
+                          {item.purchased ? 'Purchased' : 'To buy'}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => removeShoppingItem(item.id)}
+                          aria-label={`Remove ${item.name}`}
+                          className="rounded-lg px-2 py-1 text-sm text-red-600 hover:bg-red-50"
+                        >
+                          Remove
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <button type="button" onClick={copyShoppingList} className="rounded-lg border border-[#b8cfb5] bg-white px-3 py-2 text-sm font-semibold text-[#245c43] hover:bg-[#eef5eb]">
+                      Copy list
+                    </button>
+                    <button
+                      type="button"
+                      onClick={clearPurchasedItems}
+                      disabled={!shoppingList.some((item) => item.purchased)}
+                      className="rounded-lg border border-[#dce5da] bg-white px-3 py-2 text-sm font-semibold text-[#536459] hover:bg-[#f6f8f5] disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      Clear purchased
+                    </button>
+                  </div>
+                </>
+              )}
+              <p className="mt-3 text-xs text-[#78877c]">This list is saved in this browser on this device.</p>
+            </section>
+          </section>
+        )}
+
+        {activeView === 'planner' && (
+          <section className="mb-8 rounded-2xl border border-[#e4eae2] bg-white p-4 sm:p-6 md:p-7">
+            <WeeklyMealPlanner
+              priorityIngredients={(foodPriorities || [])
+                .filter((item) => item.priority === 'urgent' || item.priority === 'soon')
+                .map((item) => item.name)}
+              onAddMissingIngredients={addShoppingItems}
+            />
           </section>
         )}
 

@@ -11,6 +11,7 @@ def generate_recipes(
     cuisine: str | None = None,
     dietary_preferences: list[str] | None = None,
     excluded_ingredients: list[str] | None = None,
+    priority_ingredients: list[str] | None = None,
     servings: int = 2,
     max_prep_minutes: int = 45,
 ) -> list[dict]:
@@ -39,6 +40,7 @@ def generate_recipes(
             "cuisine": cuisine or "Any",
             "dietary_preferences": dietary_preferences or [],
             "excluded_ingredients": excluded_ingredients or [],
+            "priority_ingredients": priority_ingredients or [],
             "servings": servings,
             "max_prep_minutes": max_prep_minutes,
         },
@@ -65,17 +67,19 @@ Rules:
 3. Put every ingredient not in inventory under missing_ingredients.
 4. Respect excluded ingredients and dietary preferences.
 5. Prefer recipes that use ingredients approaching their recorded expiry dates.
-6. An expiry date is only a planning hint. Never claim it proves food is safe.
-7. Do not recommend using expired food merely to avoid waste.
-8. Keep prep_minutes at or below the requested maximum when possible.
-9. Use the requested serving count.
-10. Make cooking instructions clear and practical.
-11. Do not invent inventory quantities.
-12. Return JSON only, with no Markdown or extra text.
-13. Estimate calories and macronutrients per serving, not for the entire recipe.
-14. Return numeric values for calories_kcal, protein_g, carbohydrates_g, and fat_g.
-15. Base estimates on the listed ingredients and reasonable portion sizes.
-16. State in the disclaimer that nutrition values are estimates and may vary with ingredient quantities and brands.
+6. Give priority_ingredients in USER PREFERENCES extra weight: try to use as many of these ingredients as practical across the suggested recipes.
+7. Treat priority_ingredients as a preference, not permission to violate dietary preferences, excluded ingredients, food-safety rules, or the confirmed inventory.
+8. An expiry date is only a planning hint. Never claim it proves food is safe.
+9. Do not recommend using expired food merely to avoid waste. Never prioritize an item with a recorded expiry date earlier than today.
+10. Keep prep_minutes at or below the requested maximum when possible.
+11. Use the requested serving count.
+12. Make cooking instructions clear and practical.
+13. Do not invent inventory quantities.
+14. Return JSON only, with no Markdown or extra text.
+15. Estimate calories and macronutrients per serving, not for the entire recipe.
+16. Return numeric values for calories_kcal, protein_g, carbohydrates_g, and fat_g.
+17. Base estimates on the listed ingredients and reasonable portion sizes.
+18. State in the disclaimer that nutrition values are estimates and may vary with ingredient quantities and brands.
 
 Return this JSON structure:
 {{

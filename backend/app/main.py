@@ -1,4 +1,9 @@
 
+import logging
+
+logger = logging.getLogger(__name__)
+
+
 from contextlib import asynccontextmanager
 from typing import Annotated
 
@@ -22,13 +27,18 @@ from app.schemas import (
     InventoryCreate,
     InventoryResponse,
     InventoryUpdate,
-)
-
-from app.schemas import (
     RecipeSuggestionRequest,
     RecipeSuggestionResponse,
+    StorageGuidanceRequest,
+    StorageGuidanceResponse,
+    WeeklyMealPlanRequest,
+    WeeklyMealPlanResponse,
 )
+
+from app.services.storage_service import generate_storage_guidance
+
 from app.services.recipe_service import generate_recipes
+from app.services.meal_planner_service import generate_weekly_meal_plan
 
 from app.services.expiry_service import suggest_expiry
 from app.services.image_validator import read_validated_image
@@ -232,6 +242,7 @@ def suggest_recipes(
             cuisine=request.cuisine,
             dietary_preferences=request.dietary_preferences,
             excluded_ingredients=request.excluded_ingredients,
+            priority_ingredients=request.priority_ingredients,
             servings=request.servings,
             max_prep_minutes=request.max_prep_minutes,
         )
@@ -254,6 +265,56 @@ def suggest_recipes(
         ) from exc
 
 
+
+
+@app.post(
+    "/api/meal-plan/weekly",
+    response_model=WeeklyMealPlanResponse,
+)
+def create_weekly_meal_plan(
+    request: WeeklyMealPlanRequest,
+    db: Session = Depends(get_db),
+):
+    try:
+        items = db.scalars(select(InventoryItem).order_by(InventoryItem.name)).all()
+        inventory = [
+            {
+                "name": item.name,
+                "quantity": item.quantity,
+                "unit": item.unit,
+                "category": item.category,
+                "expiry_date": item.expiry_date.isoformat() if item.expiry_date else None,
+            }
+            for item in items
+        ]
+        if not inventory:
+            return WeeklyMealPlanResponse(
+                plan=[],
+                inventory_count=0,
+                message="Your inventory is empty. Add ingredients before creating a meal plan.",
+            )
+        plan = generate_weekly_meal_plan(
+            inventory=inventory,
+            dietary_preferences=request.dietary_preferences,
+            excluded_ingredients=request.excluded_ingredients,
+            priority_ingredients=request.priority_ingredients,
+            servings=request.servings,
+            max_prep_minutes=request.max_prep_minutes,
+            existing_plan=request.existing_plan,
+            target_day=request.target_day,
+            target_meal=request.target_meal,
+        )
+        return WeeklyMealPlanResponse(
+            plan=plan,
+            inventory_count=len(inventory),
+            message="Review the meal plan and check food condition before cooking.",
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Weekly meal-plan generation failed")
+        raise HTTPException(status_code=502, detail="Meal-plan generation failed. Check backend logs and try again.") from exc
+
 @app.post(
     "/api/expiry-suggestion",
     response_model=ExpirySuggestionResponse,
@@ -271,6 +332,37 @@ async def expiry_suggestion(payload: ExpirySuggestionRequest):
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+
+@app.post(
+    "/api/storage-guidance",
+    response_model=StorageGuidanceResponse,
+)
+def get_storage_guidance(
+    request: StorageGuidanceRequest,
+):
+    try:
+        result = generate_storage_guidance(
+            ingredient=request.ingredient,
+            question=request.question,
+            category=request.category,
+            storage_notes=request.storage_notes,
+        )
+
+        return StorageGuidanceResponse(**result)
+
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=str(exc),
+        ) from exc
+
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="Storage guidance generation failed. Check backend logs.",
+        ) from exc
 
 
 @app.patch("/api/inventory/{item_id}", response_model=InventoryResponse)

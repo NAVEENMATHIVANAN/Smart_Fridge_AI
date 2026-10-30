@@ -200,6 +200,7 @@ export async function suggestRecipes(preferences = {}) {
         cuisine: preferences.cuisine || null,
         dietary_preferences: preferences.dietaryPreferences || [],
         excluded_ingredients: preferences.excludedIngredients || [],
+        priority_ingredients: preferences.priorityIngredients || [],
         servings: Number(preferences.servings) || 2,
         max_prep_minutes: Number(preferences.maxPrepMinutes) || 45,
       }),
@@ -246,5 +247,47 @@ export async function suggestExpiryDate({
     throw new Error(data.detail || 'Could not suggest an expiry date.')
   }
 
+  return data
+}
+
+
+
+export function getStorageGuidance({
+  ingredient,
+  question = null,
+  category = null,
+  storage_notes = null,
+}) {
+  return request('/api/storage-guidance', {
+    method: 'POST',
+    body: JSON.stringify({
+      ingredient,
+      question,
+      category,
+      storage_notes,
+    }),
+  })
+}
+
+
+export async function generateWeeklyMealPlan(preferences = {}) {
+  const response = await fetch(`${API_BASE_URL}/api/meal-plan/weekly`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      dietary_preferences: preferences.dietaryPreferences || [],
+      excluded_ingredients: preferences.excludedIngredients || [],
+      priority_ingredients: preferences.priorityIngredients || [],
+      servings: Number(preferences.servings) || 2,
+      max_prep_minutes: Number(preferences.maxPrepMinutes) || 45,
+      existing_plan: preferences.existingPlan || null,
+      target_day: preferences.targetDay || null,
+      target_meal: preferences.targetMeal || null,
+    }),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    throw new Error(data.detail || `Meal-plan request failed (${response.status}).`)
+  }
   return data
 }

@@ -61,6 +61,7 @@ class RecipeSuggestionRequest(BaseModel):
     cuisine: str | None = Field(default=None, max_length=60)
     dietary_preferences: list[str] = Field(default_factory=list, max_length=10)
     excluded_ingredients: list[str] = Field(default_factory=list, max_length=30)
+    priority_ingredients: list[str] = Field(default_factory=list, max_length=30)
     servings: int = Field(default=2, ge=1, le=12)
     max_prep_minutes: int = Field(default=45, ge=5, le=240)
 
@@ -88,5 +89,42 @@ class RecipeResponse(BaseModel):
 
 class RecipeSuggestionResponse(BaseModel):
     recipes: list[RecipeResponse]
+    inventory_count: int
+    message: str
+
+
+class StorageGuidanceRequest(BaseModel):
+    ingredient: str = Field(min_length=1, max_length=120)
+    question: str | None = Field(default=None, max_length=500)
+    category: str | None = Field(default=None, max_length=60)
+    storage_notes: str | None = Field(default=None, max_length=500)
+
+
+class StorageGuidanceResponse(BaseModel):
+    ingredient: str
+    storage_method: str
+    temperature: str
+    preparation: list[str]
+    storage_duration: str
+    freezing_guidance: str
+    spoilage_signs: list[str]
+    additional_tips: list[str]
+    answer: str
+    disclaimer: str
+
+
+class WeeklyMealPlanRequest(BaseModel):
+    dietary_preferences: list[str] = Field(default_factory=list, max_length=10)
+    excluded_ingredients: list[str] = Field(default_factory=list, max_length=30)
+    priority_ingredients: list[str] = Field(default_factory=list, max_length=30)
+    servings: int = Field(default=2, ge=1, le=12)
+    max_prep_minutes: int = Field(default=45, ge=5, le=240)
+    existing_plan: list[dict] | None = None
+    target_day: str | None = Field(default=None, max_length=20)
+    target_meal: str | None = Field(default=None, max_length=20)
+
+
+class WeeklyMealPlanResponse(BaseModel):
+    plan: list[dict]
     inventory_count: int
     message: str
